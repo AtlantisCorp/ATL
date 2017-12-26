@@ -54,6 +54,16 @@ namespace atl
             return true ;
         }
         
+        ////////////////////////////////////////////////////////////
+        /// \brief Returns true if the given node should be removed from
+        /// this node's private subtree.
+        ///
+        ////////////////////////////////////////////////////////////
+        virtual bool ShouldRemoveChild( const Shared < Class >& child ) const 
+        {
+        	return true ;
+        }
+        
     public:
         
         ////////////////////////////////////////////////////////////

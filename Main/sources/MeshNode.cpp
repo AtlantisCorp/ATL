@@ -18,6 +18,39 @@
 
 namespace atl
 {
+	////////////////////////////////////////////////////////////
+	Shared < AggregatedNode > MeshNode::CreateAggregatedNode( const NodesBySubtype& lsnodes , const AggregatedGroup& group ) const
+	{
+		auto mesh = m_mesh.Get().lock();
+		assert( mesh );
+		
+		auto vcommand = mesh->GetVertexCommand();
+		assert( vcommand );
+		
+		auto agmaterial = std::make_shared < AggregatedMaterial >();
+		assert( agmaterial );
+		
+		auto command = std::make_shared < RenderCommand >( vcommand , agmaterial );
+		assert( command );
+		
+		auto agnode = std::make_shared < AggregatedNode >( lsnodes , command , agmaterial );
+		assert( anode );
+		
+		return agnode ;
+	}
+	
+	////////////////////////////////////////////////////////////
+	MeshNode::MeshNode( const Weak < Mesh >& mesh ) : m_mesh( mesh )
+	{
+		
+	}
+	
+	////////////////////////////////////////////////////////////
+	MeshNode::~MeshNode()
+	{
+		
+	}
+	
     ////////////////////////////////////////////////////////////
     void MeshNode::Update( NodesBySubtype& lsnodes , AggregatedGroup& group ) const
     {
@@ -37,6 +70,7 @@ namespace atl
         // Tries to find an AggregatedNode registered in the group for the given lsnodes map. If not found,
         // we must create a new aggregated node.
         
+        MutexLocker lck( m_mutex );
         lsnodes[GetSubtype()] = std::const_pointer_cast < Node >( shared_from_this() );
         
         auto agit = std::find_if( m_agnodes.begin() , m_agnodes.end() , [lsnodes,group](const Shared<AggregatedNode>& agnode) {
@@ -63,30 +97,5 @@ namespace atl
         }
         
         return Node::Update( lsnodes , group );
-
-        /*
-        auto agnode = group.FindNodeWithNodesMap( lsnodes );
-        
-        if ( agnode.expired() && !m_mesh.expired() )
-        {
-            auto vcommand = m_mesh.lock()->GetVertexCommand();
-            
-            if ( command )
-            {
-                auto agmaterial = std::make_shared < AggregatedMaterial >();
-                assert( agmaterial );
-                
-                auto rcommand = std::make_shared < RenderCommand >( vcommand , agmaterial );
-                assert( rcommand );
-                
-                auto aggregate = std::make_shared < AggregatedNode >( lsnodes , rcommand , agmaterial );
-                assert( aggregate );
-                
-                group.InsertNodeWithNodesMap( lsnodes , aggregate );
-            }
-        }
-        
-        return Node::Update( lsnodes , group );
-         */
     }
 }

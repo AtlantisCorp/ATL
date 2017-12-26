@@ -12,7 +12,7 @@
 #ifndef MeshNode_hpp
 #define MeshNode_hpp
 
-#include <ATL/Node.hpp>
+#include <ATL/DerivedNode.hpp>
 #include <ATL/Mesh.hpp>
 
 namespace atl
@@ -26,12 +26,26 @@ namespace atl
     ///
     ///
     ////////////////////////////////////////////////////////////
-    class MeshNode : public Node
+    class MeshNode : public DerivedNode < MeshNode >
     {
         ////////////////////////////////////////////////////////////
         Detail::WeakDirtable < Mesh >           m_mesh ;    ///< Handled Mesh object.
         mutable SharedVector < AggregatedNode > m_agnodes ; ///< AggregatedNodes created by the mesh node.
         mutable Mutex                           m_mutex ;   ///< Access AggregatedNodes.
+        
+	protected:
+		
+		////////////////////////////////////////////////////////////
+		/// \brief Creates a new AggregatedNode and associate it with
+		/// the given AggregatedGroup.
+		/// 
+		/// \note An AggregatedNode must be created with a pair of lsnodes
+		/// and group. This permits to identify the correct AggregatedNode
+		/// when updating the mesh node. However, it is AggregatedGroup
+		/// wich set the AggregatedNode's parent when using 'AppendNode'.
+		///
+		////////////////////////////////////////////////////////////
+		virtual Shared < AggregatedNode > CreateAggregatedNode( const NodesBySubtype& lsnodes , const AggregatedGroup& group ) const ;
         
     public:
         
@@ -39,7 +53,7 @@ namespace atl
         /// \brief Construct a node with a Mesh.
         ///
         ////////////////////////////////////////////////////////////
-        MeshNode( const Weak < Mesh >& mesh , const Weak < Node >& parent = Weak < Node >() );
+        MeshNode( const Weak < Mesh >& mesh );
         
         ////////////////////////////////////////////////////////////
         virtual ~MeshNode();
