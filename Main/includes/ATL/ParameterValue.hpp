@@ -1,0 +1,207 @@
+//  ========================================================================  //
+//
+//  File    : ATL/ParameterValue.hpp
+//  Project : atlresource
+//  Author  : Luk2010
+//  Date    : 29/10/2017
+//
+//  Copyright :
+//  Copyright © 2017 Atlanti's Corporation. All rights reserved.
+//
+//  ========================================================================  //
+#ifndef ParameterValue_hpp
+#define ParameterValue_hpp
+
+#include <ATL/StdIncludes.hpp>
+#include <ATL/ParameterType.hpp>
+#include <ATL/Texture.hpp>
+
+namespace atl
+{
+    ////////////////////////////////////////////////////////////
+    /// \brief Defines a parameter value.
+    ///
+    ////////////////////////////////////////////////////////////
+    class ParameterValue
+    {
+        ////////////////////////////////////////////////////////////
+        union ParameterValueByType
+        {
+            float        float1 ;
+            glm::vec2    float2 ;
+            glm::vec3    float3 ;
+            glm::vec4    float4 ;
+            
+            int          int1 ;
+            glm::ivec2   int2 ;
+            glm::ivec3   int3 ;
+            glm::ivec4   int4 ;
+            
+            unsigned int uint1 ;
+            glm::uvec2   uint2 ;
+            glm::uvec3   uint3 ;
+            glm::uvec4   uint4 ;
+            
+            bool         bool1 ;
+            glm::bvec2   bool2 ;
+            glm::bvec3   bool3 ;
+            glm::bvec4   bool4 ;
+            
+            glm::mat2    mat2 ;
+            glm::mat3    mat3 ;
+            glm::mat4    mat4 ;
+            
+            Weak < Texture > tex ;
+            
+            ////////////////////////////////////////////////////////////
+            ParameterValueByType() { new(&tex) Weak < Texture >(); }
+            
+            ////////////////////////////////////////////////////////////
+            ~ParameterValueByType() { }
+        };
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValueByType m_data ;     ///< Union to describe the underlying data.
+        ParameterType        m_type ;     ///< Actual type of the parameter. 
+        mutable Spinlock     m_spinlock ; ///< Acces to internal data.
+        
+    public:
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue();
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const ParameterValue& value );
+        
+        ////////////////////////////////////////////////////////////
+        explicit ParameterValue( float float1 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::vec2& float2 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::vec3& float3 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::vec4& float4 );
+        
+        ////////////////////////////////////////////////////////////
+        explicit ParameterValue( int int1 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::ivec2& int2 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::ivec3& int3 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::ivec4& int4 );
+        
+        ////////////////////////////////////////////////////////////
+        explicit ParameterValue( unsigned int uint1 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::uvec2& uint2 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::uvec3& uint3 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::uvec4& uint4 );
+        
+        ////////////////////////////////////////////////////////////
+        explicit ParameterValue( bool bool1 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::bvec2& bool2 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::bvec3& bool3 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::bvec4& bool4 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::mat2& mat2 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::mat3& mat3 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const glm::mat4& mat4 );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue( const Weak < Texture >& texture );
+        
+        ////////////////////////////////////////////////////////////
+        ~ParameterValue();
+        
+        ////////////////////////////////////////////////////////////
+        ParameterValue& operator = ( const ParameterValue& rhs );
+        
+        ////////////////////////////////////////////////////////////
+        ParameterType GetType() const ;
+        
+        ////////////////////////////////////////////////////////////
+        float GetFloat1() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::vec2 GetFloat2() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::vec3 GetFloat3() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::vec4 GetFloat4() const ;
+        
+        ////////////////////////////////////////////////////////////
+        int GetInt1() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::ivec2 GetInt2() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::ivec3 GetInt3() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::ivec4 GetInt4() const ;
+        
+        ////////////////////////////////////////////////////////////
+        unsigned int GetUint1() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::uvec2 GetUint2() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::uvec3 GetUint3() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::uvec4 GetUint4() const ;
+        
+        ////////////////////////////////////////////////////////////
+        bool GetBool1() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::bvec2 GetBool2() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::bvec3 GetBool3() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::bvec4 GetBool4() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::mat2 GetMat2() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::mat3 GetMat3() const ;
+        
+        ////////////////////////////////////////////////////////////
+        glm::mat4 GetMat4() const ;
+        
+        ////////////////////////////////////////////////////////////
+        Weak < Texture > GetTexture() const ;
+    };
+}
+
+#endif /* ParameterValue_hpp */

@@ -1,0 +1,58 @@
+//  ========================================================================  //
+//
+//  File    : Gl3Driver/Gl3VCVisitor.h
+//  Project : ATL/Gl3Driver
+//  Author  : Luk2010
+//  Date    : 18/11/2017
+//
+//  Copyright :
+//  Copyright © 2017 Atlanti's Corporation. All rights reserved.
+//
+//  ========================================================================  //
+#ifndef Gl3VCVisitor_h
+#define Gl3VCVisitor_h
+
+#include <Gl3Driver/Gl3Includes.h>
+#include <ATL/VertexCommandVisitor.hpp>
+using namespace atl ;
+
+////////////////////////////////////////////////////////////
+class Gl3Context ;
+
+////////////////////////////////////////////////////////////
+class Gl3VAOGetterVisitor : public VertexCommandVisitor
+{
+    ////////////////////////////////////////////////////////////
+    GLuint* VAO ;
+    
+    ////////////////////////////////////////////////////////////
+    Gl3VAOGetterVisitor();
+    
+public:
+    
+    ////////////////////////////////////////////////////////////
+    friend class Gl3Context ;
+    
+    ////////////////////////////////////////////////////////////
+    void Visit( const VertexCommand& command );
+};
+
+////////////////////////////////////////////////////////////
+class Gl3VAOSetterVisitor : public VertexCommandVisitor
+{
+    ////////////////////////////////////////////////////////////
+    GLuint* VAO ;
+    
+    ////////////////////////////////////////////////////////////
+    Gl3VAOSetterVisitor( GLuint* vao );
+    
+public:
+    
+    ////////////////////////////////////////////////////////////
+    friend class Gl3Context ;
+    
+    ////////////////////////////////////////////////////////////
+    void Visit( const VertexCommand& command );
+};
+
+#endif /* Gl3VCVisitor_h */

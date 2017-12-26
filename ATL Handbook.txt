@@ -1,0 +1,2274 @@
+ATL Developper handbook - What i think about ATL's engine when i develop it.
+===========================================================================
+
+1. Loading a Surfacer and a Driver, where all begins.
+
+=> load libOSXWindow.dylib / libOSXWindow.so.1 / libOSXWindow.dll
+=> load libGl3Driver.dylib ...
+
+ContextSettings settings = ContextSettings::Default();
+VideoMode mode = driver -> GetDesktopVideoMode();
+Surfacer = Root::GetSurfacer();
+
+It can only be one Surfacer by Instance. This surfacer can be chosen from the 'config.atl' file
+at the root of working directory, or by using 'Root::LoadSurfacer()' and loading the library for
+the surfacer. 
+
+A surfacer is responsible for getting a Surface object. This object is managed differently upon 
+the implementation subsystem. For example, an OpenGL surface has a private context which is shared
+with a global context. A D3D surface has a Context linked to the D3D driver. A Vulkan surface is
+transparent. 
+
+A Driver manages a special drawing API, as OpenGL or DirectX10. Its role is to create specific instances
+of managed resources linked to the underlying API. A Driver should not use platform-dependent behaviour,
+but should rely on the surfacer. A Driver can get the underlying API of the surfacer by using 'Surfacer::GetSystemAPI()'.
+This let the driver manages its compatibility.
+
+OpenGL example : The surfacer creates the underlying window surface, and driver manages a global shared context with
+contextes for each created render window. The framebuffers objects, created by the context, are created by the window 
+with RenderWindow::CreateRenderTexture(). Implementation of Window's surface creation is delegated to the surfacer,
+while creation and management of gl context is delegated to the driver.
+
+D3D example : The surfacer creates the underlying window surface. The driver creates the D3D device with an immediate
+context for the render window if not already created yet, or create a sub device context for this particular window.
+RenderTexture is implemented by the driver and created by RenderWindow::CreateRenderTarget().
+
+Notes : in both cases, the contextes shares global datas as Buffer Objects, textures, ... However, RenderTextures (D3D)
+and FBO (OGL) are specific for the context / DeviceContext and thus, to the RenderWindow. A RenderWindow not shown can
+be created by using Surfacer::CreateSilentWindow() if available to create the surface.
+
+Root -> InstallDriver ()
+Root -> InstallSurfacer ()
+
+Surfacer -> Create Surface
+
+Driver -> Create RenderWindow ( Surface )
+
+Driver -> Create RenderWindow ( VideoMode , ContextSettings )
+
+    Surfacer -> CreateSurface ( VideoMode , ContextSettings )
+    Driver -> CreateContext ( window , ContextSettings )
+
+Driver -> Create RenderTexture ( VideoMode , MainWindow )
+
+    MainWindow -> CreateRenderTarget ( VideoMode )
+    ... 
+
+Driver -> Create Texture 
+
+Surface creation : 
+
+[Win32] : 
+=> Create Window (HWND)
+=> Set PixelFormat (HDC)
+=> Create HGLRC (GL Context)
+=> Share with global context.
+
+[XCB] :
+=> Create Window with default settings.
+=> Set Window Attributes from choosing VisualInfo and Colormap.
+=> Create GLX Context.
+=> Share with global context.
+
+[OSX] : 
+=> Create NSWindow.
+=> Create NSBlackView.
+=> Create NSOpenGLView.
+=> Create PixelFormat.
+=> Create NSOpenGLContext with format. 
+=> Share context with global context.
+
+1.1. Elaborating a very simple configuration file.
+
+// 'config.atl' file : Represents a basic configuration file where keywords are : 
+//  - Surfacer : name of the desired surfacer. ( 'lib' is prepend and $DYLIB_EXT$ is appended )
+//  - Driver   : name of the desired driver. ( 'lib' is prepended and $DYLIB_EXT$ is appended )
+//  - Autoload : directory to autoload plugins. ( Notes: Surfacer and Driver plugin should not be in this directory
+//               as they can be only loaded once )
+
+Every pathes are relatives to the current working directory. 'Root::Get/SetWorkingDirectory()' can be used to change
+this directory. When no file is found, it will be created with default value by the Root object. However, default lib
+names are platform-dependent and results as default plugins names. ( Example: on OSX, 'Surfacer' is 'OSXWindow' )
+
+2. Loading objects asynchroneously ? What about a simple queue/command design ?
+
+LoadingQueue queue from renderwindow. 
+LoadingQueueManager => load only selected queue.
+
+Loading screen:
+
+load LoadingQueue for loading screen (should be fast).
+display loading scene while loading other LoadingQueue (should be less fast).
+
+Each loading queue locks and unlocks the renderwindow so you should separate the resource's
+loading in as many queue as you want to let the renderwindow also flush its context. When doing
+immediate resource loading, you can create a loading queue and load it immediatly when needed (example
+for only one object). Example imagine you have a big scene. When the user go forward, going to a limit
+of the currently loaded bounds will make you launch a background loading of loading queues for the objects
+in the forward range. This let you draw the scene while loading other objects on-the-go. Another example you 
+have a very very big scene but you want to draw everything, create multiple queues for big/medium/quick objects
+and load first the big and mediums. Then load quick objects while displaying to user what is currently loaded.
+As a loading queue use a Performer you can retrieve each queue performance. 
+
+3. Rendering objects from RenderQueues/VertexCommands: a simple but internally complicated design.
+
+rendertarget->Begin() ( lock context and make it current for RenderQueue processing )
+
+for each renderqueue in renderqueues
+{
+    driver->draw( renderqueue )
+}
+
+rendertarget.end() ( unlock context )
+
+Remarks: This way of rendering is to simple for multipass rendering and for multithreaded loading. For those 
+two purpose, renderqueues can be grouped by 'passes' objects which also maintain a Program ( shader pipeline ).
+The pass will be responsible for setting the current program and drawing each renderqueue.
+For each pass, the context will be unlocked to let a chance for loading queues to continue their background loading.
+However, doing this will accumulate some time between passes. Furthermore, renderqueues in pass might be altered
+while loading processes its objects. The new pseudo-code will look like:
+
+for each pass in passes
+{
+    target.begin()
+    pass.program.prepare()
+    
+    for each renderqueue in pass.renderqueues
+    {
+        driver.draw( renderqueue )
+    }
+    
+    target.end()
+}
+
+Remarks: Applying a material to this code is complicated. A simple way of adding a rendercommand to a particular
+material (as materials are shared between all objects) is to associate a material with each renderqueue. As 
+renderqueues are also specific for the pass, they can be checked upon their material. So the code will look like:
+
+for each pass in passes
+{
+    target.begin()
+    pass.program.prepare()
+    
+    for each renderqueue in pass.renderqueues
+    {
+        renderqueue.material.prepare()
+        driver.draw( renderqueue )
+    }
+    
+    target.end()
+}
+
+Remarks: Doing this for each rendertarget will lead us to a specific 'path' describing on one can get an actual
+image from data to the screen. This will be a 'RenderPath'. This way, you can set multiple passes with their 
+renderqueues for a rendertarget, and then add this target to the renderpath you want to draw. The function will 
+look like:
+
+( RenderPath:draw() ):
+
+for each target in targets 
+{
+    for each pass in target.passes
+    {
+        target.begin()
+        pass.program.prepare()
+    
+        for each renderqueue in pass.renderqueues
+        {
+            renderqueue.material.prepare()
+            driver.draw( renderqueue )
+        }
+    
+        target.end()
+    }
+}
+
+Remarks: In this function, we can see we can have multiple rendertargets, with each multiple passes, programs, 
+and materials. In each pass, we have multiple renderqueues which are actually drawn to the current target backbuffer.
+However, we want also to support multiple viewport. How can we do that ? Well we must begin by a simplier question: What
+is a Viewport ? A Viewport is a zone where the context will draw in its backbuffer. This means, that you will draw your
+commands only to a specified zone in the backbuffer. When the backbuffer swap with the frontbuffer, actual content is 
+set to the zone you drew. So, in order to handle multiple viewports, we must handle what kind of things the user might
+do with multiple viewports. We can do it in many ways:
+
+(1) Let the user draw manually in each viewport he wants with functions like 'setViewport', 'getViewport', ... The 
+rendering function will look like:
+
+( main() ): (in running loop)
+
+renderpath.draw( viewport1 )
+renderpath.draw( viewport2 )
+
+(2) Associate the viewport with a renderpath and call the renderpath.draw() method when drawing viewports.
+
+( main() ): (in running loop)
+
+viewport.setrenderpath( renderpath )
+viewport.draw()
+
+(3) Let the user draw each renderpath for each viewport but let the viewport be values relatives to the actual backbuffer
+configuration size. This way, a generic Viewport::Default can be set with values of 1.0f for each entries. 
+
+renderpath.draw( Viewport.default() )
+
+Remarks: Letting the user when to draw and which Viewport to draw is, for me, a key to customization of the rendering
+process. However, letting viewports to relatives values may be a not desired behaviour. So, we must provide two Viewport
+behaviours: a standard, relative to its parent backbuffer surface, behaviour and a static behaviour where values are in
+pixels. Example: a simple renderpath to create shadow mapping. With a viewport relative of 1.0f (actual backbuffer 
+surface), the first target (RenderToTexture of 1024 by 1024 texels) will render with a viewport of 1024 by 1024, then the
+second target (the actual renderwindow) will use the same viewport (so the actual context's backbuffer surface, example
+1024 by 768) to draw the content and will correctly use the previous's texture. When a user wants to use different 
+viewports, you can draw targets as many times you want with the pathes with different viewports.
+
+4. Updating those RenderQueues with VertexCommands: How to make objects decide of where they have to be ?
+
+Imagine you have numerous objects with their VertexCommands. Now you want to say: okay, let's draw them ! This implies
+to submit their VertexCommands to the appropriate RenderQueues. But RenderQueues are specific of a target's pass ! So
+you should know on which target's pass and to which renderqueue the object might be drawed to actually submit those
+VertexCommands. This way is not so dumb but an object can be drawed numerous times by different target's pass. Let's take
+again the shadow mapping example: the first target needs to draw every objects that cast a shadow, and the second target
+needs every objects. So the VertexCommands for shadow-casting objects are shared between the two targets. Also, how to 
+choose the right pass for those objects ? 
+
+4.1. Choosing the right pass takes one word: program.
+
+Choosing the right pass is not so difficult. Pass is designed by discriminating each others by their programs. They 
+actually are organised the same way as renderqueues but by programs (and not by materials). When an object wants to 
+be drawed by a target, it must always specify the program it will use and a material to draw it. So, choosing the pass
+will be as simple as: 
+
+( target.addVertexCommand( program , command ) ):
+
+passesbyprogram.find( program ).addVertexCommand( command )
+
+4.2. Choosing the right renderqueue also takes another word: material.
+
+RenderQueues works the same way as passes and objects should always not which material they have to use to be drawed. So
+the actual work will look like:
+
+( pass.addVertexCommand( material , command ) ):
+
+renderqueuesbymaterial.find( material ).addVertexCommand( command )
+
+4.3. Object's VertexCommands updates: asynchroneously updating the renderqueues.
+
+The way passes and renderqueues are designed implies the user/object always know which program and which material he will
+use. This seems obvious to us so that seems well-designed. To update the object, it is defined a method 'update' in any
+updatable objects. This function must updates dirty VertexCommands. Updating those VertexCommands seems more like emplacing
+old VertexCommands to new VertexCommands modified to the renderqueues. This means that the VertexCommands are already 
+inplaced in their correct renderqueues, passes and target. This can't be.
+
+So we have a choice to make: either we rebuild the renderqueues for each frame, or we update current renderqueues in
+targets. When choosing to which target the object have to be drawed, the object can retain wich target it is, and when 
+updating, it will add its VertexCommands using the previous method. This will look like:
+
+( main() ):
+
+object.addTarget( target1 )
+object.addTarget( target2 )
+
+( object.update() ):
+
+for each target in targets
+{
+    target.addVertexCommand( program , material , command )
+}
+
+Remarks: Doing this complicates everything when you want to change the object's targets. Another method would be to 
+integrate the target in the update method, in such way the object doesn't need to know which target it draw to. An object
+can be part of a group of objects with the same target. A target can owns a group of objects and call update on all of 
+them. This group can be shared among multiple targets. This will look like:
+
+( main() ):
+
+group.addObject( object1 )
+group.addObject( object2 )
+target.addGroup( group )
+
+( target.update() ):
+
+for each group in groups
+{
+    for each object in group.objects
+    {
+        object.update( this )
+    }
+}
+
+( object.update( target ) ):
+
+target.addVertexCommand( command )
+
+Remarks: Doing like this simplifies changing an object from one target to another. Furthermore, it simplifies updates and
+let target rebuild its VertexCommands for each frame. Building a VertexCommand for each frame seems to be a slow operation.
+How can this be quicker ?
+
+4.4. Rebuilding VertexCommands and RenderQueues on each frame is slow. Going beyond ?
+
+Rebuilding each renderqueues for each pass for each VertexCommands implies locking the renderqueue's mutex to add a 
+VertexCommand for each vertex command, for each object, for each material and for each program. Complexification of O(4).
+So some optimizations may be done. 
+
+4.4.1. Batching vertex commands updates.
+
+Instead of locking the renderqueue for each addition of one VertexCommand, let a method 'addVertexCommands()' add multiple
+commands in one time. This will save further locking.
+
+4.4.2. Caching RenderQueues: a viable solution ?
+
+One can say 'okay, rebuilding renderqueues let places for customization but hey, not every objects i have changes every
+frame'. And that's quite actually true. So maybe we can make static and dynamic renderqueues. Static renderqueues for
+objects that does not aim to be really often dirty and dynamic queues for objects that will change every frames.
+
+4.4.2.1. Static renderqueues
+
+Management of those queues can be done very simply: an object adds a VertexCommand. Caching is done automatically and the
+queue is not resetted at target's end. However, when the object wants to emplace a new VertexCommand, it has to find the
+actual VertexCommand for this object, remove it, and replace it by the new one. This operation is slower than a simple
+queue addition and thus only objects that don't change often should be placed in those queue. Also a static renderqueue 
+should be accessed using a mutex (operations are too big for a spinlock).
+
+4.4.2.2. Dynamic renderqueues
+
+When an object adds a VertexCommand, queue is reset at the target's end() and this VertexCommand is not drawed anymore. The
+object has to re-add the VertexCommand each frame but as the object aims to be very often modified, it will just take a 
+simple queue addition to add this VertexCommand again. Also a dynamic renderqueue should be accessed using a spinlock, as
+access and additions operations are quick. Spinlock is also quicker than Mutex.
+
+4.4.3. Conclusions
+
+The objects should also hold a static/dynamic flag to allow user to add objects to groups. Object will then decide to place
+itself in static or dynamic queues depending on this flag. Draw function will remain the same but update function will
+look like:
+
+( main() ):
+
+group.addObject( object1 )
+group.addObject( object2 )
+target.addGroup( group )
+
+( target.update() ):
+
+for each group in groups
+{
+    for each object in group.objects
+    {
+        object.update( this )
+    }
+}
+
+( object.update( target ) ):
+
+if ( dirty )
+{
+    if ( flag & static )
+    {
+        target.addStaticVertexCommand( command )
+    }
+    
+    else if ( flag & dynamic )
+    {
+        target.addDynamicVertexCommand( command )
+    }
+}
+
+4.4.4. Further considerations on implementation: When do we call begin/end target methods ?
+
+Normally they should be called between passes drawing. However, as said in previous paragraph, 'end' should also reset
+every dynamic render queues. So resetting dynamic render queues should be done after every pass or between pass draw ? 
+A simple answer: Yes and no. Because each pass have different renderqueues, they can be resetted for and for each one
+and only one pass at a time. What i mean is as passes does not share render queues (but share vertex commands), it does not
+matter when do we reset the renderqueues as long as they are correctly updated. This leads us to the following question:
+When do the object's group must be updated ?
+
+4.4.5. When do we update the objects ?
+
+An advised mind would say this should be done in another thread. Except that if that thread is longer that the rendering
+thread to update its queues, update will not be done and will result in partial drawing. So, we have two choices: (1) let
+the renderqueues update in the same thread as the render function. (2) let the renderqueues wait for their vertex commands
+to be in 'updated' or 'mustdraw' state. What kind of implementation could do something effectively ?
+
+4.4.5.1. Partial update of objects: multithreads and running/drawing conditions.
+
+When drawing a set of passes, order matters. So we cannot draw other passes while first pass is not ready. When drawing
+multiple rendertargets, we can only draw independent targets. That's where the renderpath object fits its role: it can 
+determines which rendertargets are ready, which are independent, and so... which can be drawed before which. 
+Implementation can say that in a rendering path, every target has 'parent(s)' and 'child(ren)' targets. When the target
+has been drawed, its drawed flag is set to true. If every target's parents have their drawed flags to true, the target
+is said drawable and will be drawed by the renderpath. However, if one of the target's parents is not drawed yet, the 
+target must wait for this parent to be drawed before. 
+
+This let us imagine a concept where you have multiple independent targets (no parents) that are drawed whenever possible 
+and then their children (untill going to the renderwindow) are also drawed. BUT, in order to be drawed, the rendertarget
+must have all of its RenderQueues state set to 'updated'. When is a renderqueue, 'updated' ?
+
+When updating a rendertarget and its queues/passes, groups are used to know which objects have to update the rendertarget.
+And here is the solution: a call to 'rendertarget.update()' must be finished after the last 'rendertarget.draw()' command.
+This makes sure that every groups has updated its objects, without regarding on renderqueues changes. So 'update' method
+sets 'rendertarget.updated' flag to true and 'rendertarget.draw' set 'rendertarget.updated' flag to false. Here we are.
+A simple atomic operations leads us to multithreaded update/render. When not updated, 'rendertarget.draw' will not call 
+'update' on its own as 'draw' is a constant operation and 'update' is not.
+
+4.4.5.2. Multiple targets update and context sharing. 
+
+Imagine a very simple situation with two rendertarget: one calculate something to a framebuffer and the other one uses the
+same group to draw something else using this framebuffer's texture. In a simple update loop, the two rendertarget will call
+'ObjectGroup::Update()' on the same group and as the rendertarget is different, the group will call 'AddVertexCommands()' 
+on both targets, resulting in a double update. However, those update should not modify the underlying context's holded 
+objects like vertex buffers, texture buffers, etc. 
+The 'Object::Update()' method should only maintains a suitable VertexCommands lists in the rendertarget that points to 
+context's dependent buffers and structures. Modifying the content of those buffers should not be done here.
+
+4.5. Root default ObjectGroup.
+
+When system startup, a default group is created. It is planned that when a renderable (an Object) is created, it is 
+automatically added to the default group (example in a sort of scene tree, the tree can by default use the default group
+to place every objects and then, use lesser groups to split objects upon which node they are in). 
+
+5. Designing a correct RenderPath.
+
+A RenderPath is a class that organizes the rendering from multiple rendertargets to a single renderwindow, as the following
+scheme describe as an example: 
+
+-> Update( target1, target2, window ) |-> Render: target1 |-> Render: target2 |-> Render: window
+
+The sign '|->' means the next task is executed only at the end of the previous task. However, different implementation can
+be considered.
+
+5.1. Compareason for differents implementation.
+
+5.1.1. Simplest implementation: update all first, render second.
+
+The simplest implementation would say "update every targets first, next render each of them following the user given 
+order." This implementation has two main biases: 
+
+(1) In a multithreaded context, waiting to update every target before rendering each target is not optimal. Update of a 
+target should be done at the same time of rendering to another target. 
+
+(2) At least, each target should update its VertexCommands just before rendering. 
+
+5.1.2. Simplest multithreaded implementation.
+
+Given the following structure for a RenderPath's 'Step': 
+
+struct {
+    Target    target ,      // This represent the actual target for the step.
+    Target*   previous ,    // 'Pointer' to the previous target.
+    Target*   next ,        // 'Pointer' to the next target.
+    atom_bool updated       // true to indicate 'update' is done, false otherwise (it has to be done).
+}
+
+When rendering different targets, the path may be as below:
+
+target1 -->
+            --> window
+target2 --> 
+
+This way means target1 and target2 are independent. While target2 is updating, target1 can be rendered and vice-versa.
+Consider now the following path:
+
+target1 --> target2 -->
+                        --> window
+target3 --------------> 
+
+'target3' is independent from the subpath target1 to target2. This means we have created here 2 subpathes: 
+
+subpath1: target1 --> target2
+subpath2: target3
+mainpath: ( subpath1 && subpath2 ) --> window 
+
+5.1.3. Conclusions with the upside ideas.
+
+A RenderPath can be constitued by other subpathes. The main renderpath object may computes those subpathes. However, a 
+subpath is formed only by other subpathes or by a linear rendering of target. See the above for a scheme. 
+Consider the following path and subpath set:
+
+subpath3: target3
+subpath4: target4
+subpath1: (target3 && target4 ) --> target1
+subpath2: target2 --> target5
+mainpath: ( target1 && target5 ) --> window
+
+This means the following targets can be done simultaneously since the first looking: target3, target4, target2. 'target1' 
+needs target3 and target4, target5 needs target2. And window needs target1 and target2.
+
+5.2. Implementing a multithreaded path looking.
+
+A path will store every path's start. Those starts are launched all at the same time. Each step is a path's operation.
+
+PathOperation {
+    list _ * previous ,
+    Target* target
+}
+
+When previous is not already done, execute it. When target is done, execute next if not null. When window' operation is
+done, flush the renderwindow and finish path. Path of execution:
+
+window.previous?
+
+    thread1:
+        target1.previous?
+            thread2: 
+                target2.execute
+        target1.execute
+    
+    thread3:
+        target3.previous?
+        target3.execute
+    
+This way a recursive calling convention can be done, but only if it is assumed the path is checking its dependencies
+rewindly. However, this method permits getting alternate rendertargets not used by the window only by always adding those 
+targets as inherents dependencies to the main window target. 
+
+5.2.1. Notes on 'RenderPath::Easyloop'.
+
+On most of the cases, the rendering loop for a renderpath will resume itself to updating, drawing, and process events of
+main renderwindow. So that can be done separately (calling draw will also call update if target was not updated) and 
+by calling draw and flush but that can be also done by calling Easyloop. That's all. Easyloop also check for 'WindowClosed'
+state and break its loop if true. 
+
+5.2.2. Implementation detail: how to make path's operations happily wait previous operations to be done ?
+
+At first time, i though about using a simple atomic boolean by operations, and the next operation would wait for this
+boolean to be true. However, i though about a system that wouldn't make children threads wait desperately and consume
+CPU power: std::condition_variable. 
+When an operation begin, it will wait for its previouses operations to execute using their condition variable. The 
+previouses operations, when executing in a separate thread, will use 'notify_all' when rendering is done. 
+However, the path's operation structure should also take care of a boolean that will be resetted at beginning of the
+path's draw function. This way operations can't be updated more than once by frame. 
+
+6. Defining a new object's subtype: Renderable.
+
+An object is just an... object, obviously, but which has the potential of doing some action when used in an object's group
+update to the parent target. Therefore, in theory, you could have object to change the target's viewport, object's to draw
+anything or to do any action on the target. 
+
+However, the main goal of a 'Rendering' engine is to 'render' objects to the screen. Objects rendered have in common those
+things, i guess:
+
+- Different VertexCommands to update the target.
+- A 'dirty' state: when one of the VertexCommands is modified, it must be updated to the target.
+- And that's all !
+
+This is what we can define as a renderable object: an object that can hold some VertexCommand (he is the owner of those), 
+that update those VertexCommands to the target, and do it only when it has to, i.e. when it is modified. 
+
+6.1. Clarification of 'dirty' state.
+
+As a renderable object does not create any VertexCommand, it can be a good idea to say that it is to the derived class or
+to the user to set the dirty flag of the renderable to true. However, it is the renderable which set it to false when 
+updating to the target. 
+
+6.2. Multithreading purpose.
+
+A derived class or a user can modify the dirty 'state' in other threads than the main thread. In this meaning, the dirty
+state will always be an atomic boolean. However, atomic operations are slow. Therefore, the 'dirty' flag must be set only
+after ending modification of the vertex commands.
+When the internal data of a VertexCommand is modified, even if the whole data is not modified, the dirty flag must be set,
+and the renderable must be disallowed to draw while modification is performed. Indeed, creation and modification should be
+done as follow:
+
+--> Creation of VertexCommand
+--> Renderable::AddVertexCommand
+--> Renderable::MakeDirty
+
+--> Renderable::GetVertexCommand
+--> VertexCommand::Lock
+--> Modification of VertexCommand
+--> VertexCommand::Unlock
+--> Renderable::MakeDirty
+
+If this solution is a good idea to ensure data is not updated while modified, another solution can be done using the same
+functions: 
+
+--> Renderable::GetVertexCommand
+--> Renderable::RemoveVertexCommand 
+--> Modification of VertexCommand
+--> Renderable::AddVertexCommand
+--> Renderable::MakeDirty
+
+This solution has the same numbers of steps but does not involve disabling updates. A user can choose between those two
+advised solutions. When getting a vertex command, remember the renderable's update function is called only if 'dirty' flag
+is set. So, you can modify/remove/(re)add freely the VertexCommands and set the dirty flag when renderable can update them
+to the target. However, remember also that the target's renderqueue holds Weak pointers to those VertexCommands. So, when
+modifying an already registered VertexCommand, use 'VertexCommand::Lock' and 'VertexCommand::Unlock' to ensure the 
+target does not draw them while being modified. 
+
+6.3. Deriving a renderable.
+
+Inheriting classes can have an independent updating system to modify the renderable data. It is planned that a Mesh, for
+example, will be a loadable object (modifying the renderable through loading), but an Animated Object for example, will
+be able to store more than one Mesh and on update, will present the renderable that corresponds to the frame. 
+
+6.4. Implementation details: renderable selection of the target's renderqueue with material and program. 
+
+As known previously, the renderpass and the renderqueue are selected depending on the material and the program associated
+to the specific render of a VertexCommand. This means that a renderable must know its material and its program to update
+the rendertarget's queue. For customization purpose, this means: the user should be able to share vertex commands between
+multiple pass, renderqueues and targets ; the user can so set multiple materials, and programs for a vertex command. How to
+organize this into the renderable ? 
+
+A target must know the specific material and program to register a VertexCommand. We have multiple solutions:
+
+_ A renderable can hold the material and the program used to draw the vertex command. However, this system implies that to
+share a VertexCommand between two completly different renderqueue, we must have two renderable: one for each pair 
+material/program.
+_ A renderable hold a list of pair material/program, associated to a list of VertexCommand. The derived class or the user
+is so responsible for managing addition and removal of those VertexCommand in the different pairs. 
+
+Remember the updating system is asynchroneous from the drawing system. The VertexCommand's updating system is controlled by
+objects to update to the target. Those objects can be anything. In a scene tree situation, a node can hold a material, a
+program, and a Mesh. The mesh is responsible for getting the correct VertexCommands, then the node update the target with
+the correct material, program and list of vertex commands. This way, a system of parenting can be used, or to default mesh
+material. This resume to the third option:
+
+_ A renderable does not know how to update the target. Instead, a node will be responsible for updating the target, or any
+other derived that want to have specific behaviours. A mesh, will not be a renderable, because it does not hold any data 
+about the material/program pair used to draw the vertexcommands. However, a node will be a renderable. This solution, which
+is the chosen one between the two previouses, tells us no more functions should be added to Renderable.
+
+7. Designing a generic VertexCommand that can be used to draw vertexes by any driver. 
+
+A VertexCommand describes how to draw simple vertexes in one draw call. A draw call needs always the same informations: the
+number of vertexes, the structure of those vertexes, a pointer to the data (or the buffer to use with an offset). 
+For OpenGL, this is achieved using functions glVertexAttribPointer, glDrawIndexed, glDraw* calls. For D3D, the same logic 
+applies with ID3D11DeviceContext Draw, DrawIndexed, IASetVertexBuffers, IASetIndexBuffer. 
+In all cases, the VertexCommand needs to store: 
+
+- Vertex format.
+- Number of Vertex. 
+- Index format (optional).
+- Number of indexes (optional).
+- Buffer used for Vertexes.
+- Buffer used for Indexes (optional).
+- A VertexLayout object.
+
+The driver then bind the correct Vertex/Index buffers and call the correct drawing command. 
+
+7.1. VertexLayout object: the key for VertexCommand success ?
+
+When describing a VertexCommand, we as the creators know the structure of the vertexe in the vertex buffer. However, the
+underlying never know that and needs it to draw something. To compensate this, we can provide a VertexLayout that will be
+used to the driver to tell the underlying API the layout for our vertex (glVertexAttribPointer, IASetVertexLayout). 
+The VertexLayout describe each field of the VertexBuffer. As a vertex layout can be applied to different vertex buffers, 
+i was thinking about a VertexLayoutManager to manage session-based layouts. This way, layouts can be reused by any user.
+
+A VertexLayout indeed holds: a local ID, a descriptor (string, as this may not be unique, a local ID is preferred). And the
+layout data. 
+
+7.2. Describing a VertexLayout data. 
+
+Obviously, this corresponds only to a description of the vertex structure. Two big solutions can be viewed: (1) the vertex
+layout is controlled for each VertexCommand (2) the vertex layout is controlled for each Program. When controlled by the
+program, the layout is never changed. 
+
+(1) Advantages: Easily customizable for the user when deriving node or mesh or whatever related to VertexCommand. However, 
+the vertex layout is bound to the program anyway, so internally it will require to create the vertex layout once per frame
+and per vertex command. 
+
+(2) This system provide per-program layout. However, in OpenGL, buffer data is required to glVertexAttribPointer to be
+called so this call will be done for each VertexCommand as it changes the bound buffer. On DirectX, SetInputLayout can be
+used once per program as the input layout will never change in the program. The big disadvantages to this is that the data
+must be prepared to be given using the program layout. If the data does not match the program's layout, it shouldn't be 
+sent or the behaviour will be undefined (buffer's memory will not be correctly interpreted).
+
+As seen above, if the (1) is simpler to implement and provide some user's utilities, the (2) is more customizable and 
+applicable in real programs. As it was planned a VertexLayoutManager, the user may now retrieve the program's layout to 
+ensure its data is prepared to be send, by using 'Program::GetVertexLayout()'. The program will own the layout and no
+additionnal manager is required. 
+
+7.3. Again describing the structure. 
+
+The VertexLayout will be as follow:
+
+struct VertexLayout 
+{
+    uint             stride 
+    uint             count
+    VertexType       type
+    VertexComponent* components
+}
+
+A VertexComponent is one of the VertexLayout components. It can be a position, a color, a tangent, ... It is represented
+by a simple enumeration and is accessed through a simple static array. This array is allocated at creation and destroyed
+at destruction of the vertex layout. 
+
+7.4. VertexCommand final structure. 
+
+As we have seen above, the VertexType field may be the exact same thing as the VertexFormat field in the proposed Vertex
+Command structure (or i forgot the difference !). The final structure will look like:
+
+struct VertexCommand
+{
+    uint         vertex_count 
+    VertexLayout vertex_layout
+    Buffer       vertex_buffer 
+    
+    uint         index_count
+    IndexType    index_type
+    Buffer       index_buffer
+}
+
+The VertexLayout is responsible for stride, number of components, type, and components usages. However, we said above that
+the VertexLayout should be hold by the program, and not the VertexCommand. When the vertex command is drawed, it is used
+the program's vertex layout to draw the command. The final VertexCommand should look like:
+
+struct VertexCommand
+{
+    uint         vertex_count
+    Buffer       vertex_buffer 
+    
+    uint         index_count
+    IndexType    index_type
+    Buffer       index_buffer
+}
+
+This seems logical, the program's input vertex layout should not be dependant of the drawing vertex's command. However, a
+mismatching vertex command will produce unbehavioured data.
+
+7.5. Creating a VertexCommand: to drive or not to drive ?
+
+Now that i have a correct VertexCommand structure, how do i create it in a simple manner ? Multiple choices: 
+
+(1) Use std::make_shared , but as buffer are created by the driver, specify the buffers in the constructor. 
+(2) Use a driver's made function like CreateVertexCommand, returning a Shared pointer to the VertexCommand. Here i could
+    specify a buffer for vertexes, indexes, etc. However, CreateVertexCommand would only do the same thing as (1), and 
+    thus could be inlined. 
+
+(2) seems cool, but i forgot a thing: to create a buffer means to have a valid context. Thus this job is not for the 
+driver, but for the main render window. CreateVertexCommand should be called from the renderwindow, and thus could be added
+functions like CreateVertexBuffer, CreateIndexBuffer, etc. 
+
+This means that any VertexCommand will be related to a main renderwindow ? Yes, indeed, but anyway you can't create a 
+buffer on the GPU memory without a valid Context/Device. However, one can share its buffers with other contextes/devices.
+This means a silent renderwindow can be created by anyone who wants sharing contextes, and always put this renderwindow
+to construct objects. 
+
+Imagine a Mesh structure: as it hold VertexCommands, it will be related indirectly to a renderwindow. But we want our mesh
+to be usable by any renderwindow ? Or that is not necessary. Maybe. I was thinking about a map holding vertex commands for
+each renderwindow, but how to manage shared contextes with this ? This is not applicable and the only solution is to load
+a mesh for a specific renderwindow. This approach is simplier and faster as it allow optimizations for specific APIs.
+
+7.6. Context destruction: does the VertexCommand should own the buffers ?
+
+When Context is destroyed, all of its resources should also be. However, if the VertexCommand does own the buffers, at 
+Context destruction, the buffer will not be invalidated. A simple solution is to let the Context manage the vertex/index 
+buffers and let Weak pointers to the VertexCommand. This way, when the context is destroyed, Weak pointers are invalidated
+and the VertexCommand knows that its buffers are not usable. 
+
+8. Designing a real LoadingQueue. 
+
+As saw at the beginning of this text, i planned a LoadingQueue object that would allow multithreaded loading of other 
+objects. I think about the following architecture: we have objects that can be loaded without any renderwindow, and we
+have objects that have to be loaded with a specific renderwindow. So, lets say you can create a lambda (C++11 yay) which
+will always receive a 'LoadingParameters' structure. This structure will tell the current renderwindow (if associated to
+one), the current driver, the current surfacer. From now on, i don't know what to add to this structure. 
+As the lambda function represents the main content of the LoadingQueue, the object is responsible for launching the lambda
+at the appropriate time. The LoadingQueue can be launched immediatly, using synchroneous commands, or in a different thread
+by using asynchroneous commands. In order to perform this task faster, it will use a Performer with a dynamically created
+lambda (C++11 again yay) which take as parameter the loading queue and the user's lambda. 
+
+8.1. When to start a loading queue ?
+
+Whenever you want. It can be after the first renderwindow 'display' function has been called (SurfaceFirstDisplayedEvent),
+before running the RenderPath::Easyloop, at beginning of the renderloop, etc. A loading queue is loaded whenever you want,
+but you can also group them in different loading groups, to load the group whenever you want. 
+
+8.2. A new problem occured: when buffers are owned by the context, destroying every VertexCommands does not destroy the
+buffers it depends on. Is it a real problem ?
+
+In fact, no. The user is responsible for the lifetime of those buffers and should always call 'RemoveBuffers()' with the 
+complete list of buffers if only one VertexCommand uses those buffers. However, when buffers are shared between more than
+one VertexCommands, here we have our problem. 
+
+If we want to share buffers for the different VertexCommands, we have to say 'okay, if a vertex command is destroyed, how
+do we know if have to destroy the buffers ?' This problem can be solved if it is said that more than one VertexCommand can 
+use a buffer, but not more than one mesh. When the mesh is destroyed, it release its buffers. And that's all. 
+Two different meshes will always have different buffers. However, the mesh provide the vertex commands to the nodes, and 
+those nodes organizes with different programs/materials. Then it update the target.
+
+9. Organizing and generating VertexCommands: a simple Mesh class. 
+
+What is an ATL Mesh ? It seems to me it should only be a 'generator' of VertexCommands, thanks to loaded CBuffers from an
+external file. We have here our first problem: a mesh's file can generate more than one mesh. A mesh can generate more than
+one VertexCommand. A mesh file loader should be able to load more than one mesh and return a list of those mesh.
+
+9.1. Creating a mesh.
+
+When creating a mesh, it has to create its underlying structure, which will be (normally ?) CBuffers of data. 
+VertexCommands can be pre-computed from that data, but the mesh has to be loaded further to create underlying buffers from
+the renderwindow you want to draw to. A simple mesh structure will look like:
+
+struct Mesh 
+{
+    bool created , bool loaded 
+    List < VertexCommand > commands
+    List < CBuffer > vertexbuffers 
+    List < CBuffer > indexbuffers
+}
+
+If this structure seems simple, it has some drawbacks: when creating the mesh, it will fill vertexbuffers, indexbuffers,
+and created to true. Loaded is false, commands is empty. When loading the vertex commands, how do we know which cbuffer 
+goes to the correct vertex command ? Let's take a look at another idea with submesh for each vertex command:
+
+struct Submesh 
+{
+    VertexCommand command 
+    List < CBuffer > vertexbuffers 
+    CBuffer indexbuffer
+}
+
+struct Mesh 
+{
+    bool created , bool loaded
+    List < Submesh > submeshes 
+}
+
+This way, when creating the mesh it will generate one or more submeshes. For each submesh, the vertex command will be 
+different, with its own vertexbuffers and indexbuffer. Note the vertex buffers should be shared buffers. However, i forgot
+one thing: a VertexCommand can only take one vertex buffer. However, when binding different attribute buffers, we have to
+support one vertex command: bind every vertex buffers, bind the index buffer, and draw them in one draw call. So we have
+to update the vertex command to support more than one vertex buffer.
+Now with this update, submeshes can return one VertexCommand (by submesh) and as a submesh is generally created with a 
+different support material, it will be organized by the final target into VertexCommands by material independently of the
+mesh. Also a 'default' material should be available for, by example, a node class that will look for it if no other 
+material is available. Though this will be complicated as VertexCommands for each submesh will have a different material, 
+but a node class should be able to manage this by looping through the submeshes and determining a material for each, or
+it can generate subnode for each submesh (this way should be investigated).
+
+In fact, i had two options: saying a mesh is one VertexCommand, or saying a mesh is more than one VertexCommand. This 
+simple choice leads to the big architecture differencies: if a mesh has only one VertexCommand, a multi-material mesh will
+be traduced into multiples meshes. If a mesh has multiple vertex commands, a multi-material mesh will have multiple submesh
+and thus will be one structure. I think i could combine the two options, saying that a mesh has either one VertexCommand or
+multiple sub-meshes. The final mesh structure will look like:
+
+struct Mesh
+{
+    VertexCommand    command 
+    List < CBuffer > vertexbuffers
+    CBuffer          indexbuffer
+    bool             loaded
+    
+    List < Mesh > submeshes
+}
+
+This way, a node can generate subnode only by parsing the mesh's submeshes. Furthermore, the mesh might generate global 
+buffers like for bounding box or other structures.
+
+9.2. Loading the mesh: a simple task with LoadingQueue !
+
+When a mesh should be loaded (for rendering by a scene), you can always create a loading queue and load this queue whenever
+you want. A mesh can be used with only one Context or main render window. To remember, one function load the mesh using the
+given renderwindow: 'GenVertexCommands()'. This function generates vertex commands and set the loaded flag.
+
+10. A new problem: How to pass different parameters to programs while rendering ?
+
+When VertexCommands are updated to the target, program, material and raw vertex informations are passed. However, what we 
+want is that different commands should be able to pass different parameters to programs. This means, as example, a position
+vertex attribute and a Model matrix and a View matrix (and a Projection matrix okay this seems full of sense). How to do
+that ?
+
+I was wondering how a 'Node' structure could achieve that. Indeed, the Node structure will be an Object, and therefore will
+be able to update VertexCommands to render targets. However, when rendering, all program parameters data in the node 
+structure is lost. So i was thinking about a new Command type, like 'RenderCommand'. This struture would look like:
+
+struct RenderCommand
+{
+    Weak < VertexCommand >      vertexcommand /! The VertexCommand we want to draw.
+    Vector < ProgramParameter > parameters    /! The Parameters we want to bind to the current program.
+    Weak < Program >            program       /! The program meant to be used by the rendercommand.
+    Weak < Material >           material      /! The material meant to be used by the rendercommand.
+}
+
+10.1. Weak or Shared VertexCommand ? A problem of organization.
+
+Weak VertexCommand could be used only if the renderer still organize VertexCommands on its side, using the static/dynamic
+system along with passes. However, what we want is to completly replace VertexCommand storage by rendercommands, so the
+rendercommands in the target will be stored by programs and by materials. However, how a scene tree will be able to ensure
+that, for example, a RenderCommand that only bind the current camera for example, will be done before other rendercommands?
+By using groups. The storage for RenderCommand could become:
+
+RenderCommandGroup
+    -> GlobalParameters
+    -> Pass #1
+        -> RenderQueue #1
+            -> RenderCommand #1
+                -> VertexCommand #1
+                -> LocalParameters
+        -> RenderQueue #2
+            -> VertexCommand #2
+    -> Pass #2
+        -> RenderQueue #3
+            -> VertexCommand #3
+            -> VertexCommand #4
+            
+For each pass, it will bind the global parameters to the binding program. A RenderCommandGroup can be created using 
+'RenderTarget::CreateRenderCommandGroup()'. The new group will be rendered from first created to last created.
+
+10.2. First conclusions.
+
+A RenderCommand let updating structures set a VertexCommand and 'local' parameters to currently bound programs. A
+RenderCommandGroup let bigger structures as a Scene set 'global' parameters for every programs used. 
+
+auto rgroup = renderwindow -> CreateRenderCommandGroup();
+rgroup -> AddGlobalParameter( Parameter( Parameters::ViewMatrix , Maths::Mat4 , camera->GetViewMatrix() ) );
+
+auto rcommand = renderwindow -> CreateRenderCommand( vertexcommand , material , program );
+rcommand -> AddLocalParameter( Parameter( Parameters::ModelMatrix , Maths::Mat4 , node->GetModelMatrix() ) );
+rgroup -> AddRenderCommand( rcommand );
+renderwindow -> AddRenderCommandGroup( rgroup );
+
+10.3. Easy Optimizations: cache keeping.
+
+Just a little text about a quick optimization: when creating rendercommands or rendercommandgroups, all those should be 
+cached somewhere, for example a Node will keep trace of its rendercommands. When the material/program changes, it will 
+always reinsert the rendercommand to the rendergroup. However, in order to do this, the rendercommandgroup must be
+accessible from the 'Object::Update( RenderTarget& )' function. But we only have infos about the target, not the 
+rendercommandgroup it updates. So i was thinking, why do not store a Weak RenderCommandGroup in the RenderCommand 
+structure ? As it will make the RenderCommand structure heavier, it will also let the Node remove the rendercommand from
+the group, and let it reinsert it in the correct group. 
+
+Node update:
+
+if ( renderqueuetypeflag & dynamic )
+{
+    auto group = rendercommand -> get.group ()
+    group -> reinsert.rendercommand ( rendercommand )
+}
+
+else if ( renderqueuetypeflag & static && is.dirty() )
+{
+    auto group = rendercommand -> get.group ()
+    group -> reinsert.rendercommand ( rendercommand )
+}
+
+This example function shows that for every frame, dynamic rendercommands should be reinserted but static rendercommands
+must only be reinserted when the object has changed its material or its program. Program parameters, material, program, 
+vertex commands are all pointers to structures actually stored else where. Program is stored in the node, and in the
+program manager. Material is stored in the material manager. Parameters are owned by the node. Vertex commands are owned
+by the underlying mesh structure.
+
+10.4. Store parameters by value or by pointer ? An epic question.
+
+Why is it important ? Because, if you store it by pointer, it will save you one copy. But, this copy saving is compensated
+by a slow mutex locking to acquire the actual parameter data, in the rendering loop and in other thread loops. If it is
+stored by value, we will have no locking, but one copy will occure when the parameter changes, i.e. not once per frame. 
+So, the total overall of those two propositions leads to the following parameters division:
+
+ConstantParameter is a parameter that does not change often in time (like a model matrix: it keeps the same value as the
+object never move). It should be used when you do not plan to change it often, and is stored by value. Modification is
+slower than access/update, as access is done without any mutex locking. Copy has been chosen for this type of parameter
+as it imply no mutex locking for data access. 
+
+VaryingParameter is a parameter that change once per frame or more (like a view matrix: it keeps changing while the mouse 
+move). It should be used when the parameter changes very often. It is stored by pointer (no copy during update) but access
+is slower as mutex locking is required. Mutex locking has been preferred over copy by value as it is faster to lock a mutex
+than to copy a parameter. As copying a varying parameter 'would' occur at least every frame, we want to escape from it and
+prefer doing a mutex locking.
+
+10.5. Final structure considerations.
+
+Two classes will be created: RenderCommand (see above) and RenderCommandGroup, as follow:
+
+struct RenderCommandGroup
+{
+    Vector < ConstantParameter >             constant_params  /! Constant parameters.
+    Vector < VaryingParameter >              varying_params   /! Varying Parameters.
+    SharedVector < RenderPass >              renderpasses     /! RenderPass list.
+    Map < RenderPassId , Weak < RenderPass > renderpassesbyid /! Every passes but by id.
+}
+
+The rendertarget will held more than one rendercommand group. A rendercommand group is created at user's will (or a sort of
+scene graph will when it wants to separate rendercommands). A rendercommand group will be drawed in the same manner as was
+the rendertarget before we had rendercommands, iterating for each program for each material and then drawing each render
+commands in the render queue. The rendercommand is drawed binding the appropriate parameters and drawing the vertex 
+command. A rendercommand can hold one or more vertex command. So the final rendering flow is:
+
+for each pass in renderpasses 
+{
+    pass.program.bind()
+    pass.program.bind.parameters( constant_params )
+    pass.program.bind.parameters( varying_params )
+    
+    for each renderqueue in pass.renderqueues
+    {
+        renderqueue.material.bind( pass.program )
+        
+        for each rendercommand in renderqueue.commands
+        {
+            pass.program.bind.parameters( rendercommand.constant_params )
+            pass.program.bind.parameters( rendercommand.varying_params )
+            driver.draw( rendercommand.vertexcommands )
+        }
+    }
+    
+    pass.program.unbind()
+}
+
+10.6. Adapting this theory to lights. 
+
+Lights are only structures acting like a group of parameters. So the user/scene can bind a light this way: 
+
+auto mylight = new Light () 
+mylight.do_stuff()
+rendercommandgroup.addparameters( mylight.parameters )
+
+Also, a great think to do (but not though yet) is to implement a node interface where everything can be done. When nodes
+are updated, they may just be like Lightnodes and bind the correct parameters. A rendercommand is not necessary drawable.
+But this way is still in development... in my head.
+
+10.7. Summarying modifications from VertexCommand to RenderCommand.
+
+For every classes that deal with vertex commands, they should deal with RenderCommand. Except mesh, that give a list of
+VertexCommand that will be assimilated by the node interface. A RenderCommand valid initialization will be:
+
+auto vertexcommands = mymesh.getvertexcommands()
+auto rendercommand  = std::make_shared < RenderCommand >( vertexcommands , mymaterial , myprogram )
+auto rendergroup    = std::make_shared < RenderCommandGroup >()
+rendergroup.addcommand( rendercommand )
+renderwindow.addrendergroup( rendergroup )
+
+OR
+
+auto rendergroup = renderwindow.createrendergroup( true )
+auto rendercommand = rendergroup.createrendercommand( true , vertexcommands , mymaterial , myprogram )
+
+As both proposition are valid, it will be advised to use the second one. 
+
+10.8. Strutures optimization: creating a ParameterGroup base class. 
+
+As getting constant parameters and varying parameters are redondant operations, it can be summarized in a ParameterGroup
+class. RenderCommand and RenderCommandGroup derives this class to store Constant/Varying parameters. 
+
+11. Let's do something new about rendering: designing a program class.
+
+What is the purpose of a program class ? A so-called 'program' represents the programmable pipeline for every rendering
+API. It can be GLSL's vertex/fragment/geometry/compute shaders, HLSL's shaders, CG shaders, whatever. A program has input
+parameters, as saw above. We already stated for Constant and Static parameters depending on their access speed.
+
+11.1. What could be a parameter ?
+
+A parameter has always a fixed type, like int1, int2, int3, int4, float1, float2, mat3, etc. It has also a 'name', or in
+HLSL it is a 'synopsis' (if i remember well). It has an index (given by the program). 
+In older projects, i made a pretty wise structure for program's parameters (it was called HardwareProgramVariable): 
+
+struct Parameter 
+{
+    String name
+    ID     id
+    Type   type 
+    Value  value
+}
+
+It was a simple structure, but some fields were used when other weren't. ID was used only by program (to register and 
+assimilate parameters at loading). 'name' was used by the user, to know where to bind the parameter. Some parameters had
+values often used, named 'alias' so the field 'Alias alias' is missing here. Value was a union of different raw types. 
+
+Well if this is a good structure, how can we improve it ? Actually i don't know. Parameters are stored with respective 
+fields client-side (or user-side) and the program choose the fields it wants to retrieve the correct parameter binding.
+Then it use [type, value] keymap to bind the parameter. Simple. 
+
+11.2. Program simple structure.
+
+A program has input parameters (see above). Those are discovered at loading time. After discovery, a map must be 
+constructed to make a bridge between ATL's aliases and program's parameters name. This is were it gets tricky. We have 
+multiple options:
+
+(1) Let the user completly construct the parameter's map with functions like 'AddAlias( alias , name )'. This suppoes the 
+user know the parameter's name. 
+(2) Make a kind of home-made file to describe program's parameters map.
+(3) And... that's all i thought.
+
+In fact there isn't many solutions. The parameter's map must be set in a way or another. And as we never know what will be
+the parameter's name for each alias, we have to let the shader's writer set those for us. We could make a hack by using
+special comments in shader's files. When reading the file, the reader will construct an alias map based on informations
+in comments. But that's not very good. Anyway we only have one solution, so let's use it. An external resource loader 
+should be able to understand that system and provide a way to make this map without C++. The API proposed will be:
+
+- AddAlias( alias , name )
+- RemoveAlias( alias )
+- GetAliasName( alias )
+- ResetAliases()
+- BindName( name )
+- BindAlias( alias )
+
+11.3. On parameters binding: difference between textures and other stuff. 
+
+A texture parameter (which is a sampler on GLSL) is affected to a texture unit. So when a texture is bound, the texture
+unit is pushed by one. However, we want the texture units to be homogeneous in the program. So we could create a map of 
+texture unit associated to their parameters and sets constant texture units for them. Then textures will be bound to those
+texture units. That's seems cool. However, D3D does not behave the same and therefore, texture units management should be
+done only by specific classes for OpenGL. 
+
+Notes that parameter never define attributes (as Position, Normal, Tangent, etc.) and therefore, aliases must not be 
+confused with Attributes. Attributes are defined in the vertex layout and are bound from VertexCommand data.
+
+11.4. Program basic structure.
+
+struct 
+{
+    Map < Alias , Parameter* > aliases      /! Aliases for which parameter ?
+    UniqueVector < Parameter > parameters   /! List of parameters 
+    VertexLayout               inputlayout  /! Layout to bind attributes.
+}
+
+Parameters are here always ConstantParameter as they are never copied. A mutex lock is not required to read/write from
+them, as they will never change and are constructed at initialization. In that purpose, they are stored as a vector of
+unique_ptr and Aliases can access them directly from pointer data. However, this implies the program binding is done in one
+thread, which is obviously the case (why would you bind program parameters in another thread ? binding the context from 
+one thread to another is slower to bind every parameters in the same thread). Also, it implies the parameters never change
+and so the shader's files never changes. This is the case: loading another shader is creating another program. 
+
+11.5. Design of a VertexComponent.
+
+While making VertexLayout for program, i found VertexComponent would be more complicated than expected. In fact, a vertex
+attribute component hold more data than expected: its size, its type, its name or its index. Its size can be computed from
+its type, but its name/index must be given by the user. One more data for the user to give. 
+
+11.6. Howto: load and create a program ?
+
+The first version proposed was a simple function 'Driver::CreateProgram'. However, we have a big problem over our Program
+implementation. DirectX does not support the 'program' object and thus, separate the shader stage in three steps: vertex,
+fragment and geometry stages. This means every parameters could be, in theory, associated with a different stage in the
+program. But we want every parameters to be accessible to those three stages, when binding them, without specifying the
+stage. We can solve this problem by two ways:
+
+(1) Let the user set a manual 'm_stage' internal variable in parameter to let the program bind to the correct shader stage
+the parameter only if the underlying API permits it. This solution let customization based upon API-diferencies but make
+the user write more lines. 
+
+(2) Let the program manages itself those parameters. This means in a possible implementation of Program with D3D APIs, that
+it should detect which parameters are for which stages, thing i don't know yet how to do. You can use 
+'ID3D11ShaderReflection' and 'D3DReflect' (https://msdn.microsoft.com/en-us/library/windows/desktop/ff476590(v=vs.85).aspx)
+to iterates over input attributes (making the input layout) and over constant buffers (our parameters !). This is useful
+and a praticable solution can be written. 
+
+What i suggest is actually make the solution (2) but with an additional field 'm_stage' to let the user know which stage
+is set for the desired parameter. Also this implies the possibility to create the 'VertexLayout' object right after 
+compilation of the program. The proposed buffer is then bound with the program's internal VertexLayout. Program will have
+the following additional functions:
+
+- (Stage) GetParameterStage( [String name] [Alias alias] )
+- (VertexLayout) GetVertexLayout()
+
+11.6.1. Proposition on creating a program object.
+
+We have multiple options: (1) Separate the shader object from the program object. The shader object purpose will be to load
+individual shader files from the filesystem. Shader objects would be created by the driver and be API's specific. (2) Make
+the program load multiple files as its own shaders. This proposition makes redundant loading of multiple files. The program
+object should be able to retrieve already loaded shaders and thus Shader object should be a Resource object. A Shader is
+always representing a text buffer, either from a file or from raw data. (3) Make Shader a virtual Resource, and make the 
+program a requester of those resources. 
+
+The last option will be developped here. If the shader object is a virtual resource, it can use a valid mime-typed resource
+loader to be loaded. Then the program will add them to its shader's list. The Driver should create ResourceLoaders to load
+external shader's files. 
+
+11.6.2. Revision of the Resource subsystem.
+
+It was decided that the Resource system would have two types of resources: physical (loaded from files) and virtual (loaded
+directly from Driver). However, we can see that a Shader object would obviously be a Resource created by a driver but from
+a physical file. So, the Resource subsystem must be revised. Furthermore, the asynchroneous prepare/load subsystem is now
+obsolete, with LoadingQueues already implemented to permit asynchroneous loading of multiple objects. 
+
+What should be a Resource ? A Resource should concern every objects loaded and associated to a physical file. As every
+physical file has a MIME type, the Resource should always be associated with a MIME type. 
+How a resource should be loaded ? Two solutions to this question: through an external 'loader', or through the resource's 
+constructor. While loading in a constructor is an easier way, loading through an external loader presents the following
+advantages: customization, customization, customization, and of course customization. Take the following example: how to 
+load a JPEG image through a constructor loading ? You can't, or you have to make the resource manager create the correct
+JPEG image resource type from the MIME type discovered. 
+
+In fact we can use both advantages of the two world with one word: metaclasses. Associating a MIME type with a Metaclass is
+an easy way to choose the correct resource type for given MIME type. The following structures should apply to the example:
+
+( JPEG Plugin main :)
+
+auto mimetype  = Root::Get().GetMimetypes().GetMimeForExtensions({ "jpg" , "jpeg" });
+auto metaclass = std::make_shared < Metaclass < JPEGImage > >( mimetype );
+Root::Get().GetMetaclasser().Register( metaclass );
+
+( Example loading queue lambda :)
+
+auto image = Root::Get().LoadResourceFromFile < Image >( "myimage.jpg" , args... );
+{   
+    auto mimetype  = Root::Get().GetMimetypes().GetMimeForFile( file );
+    auto metaclass = Root::Get().GetMetaclasser().GetMetaclass( mimetype );
+    assert( metaclass && "No metaclass registered for type '" + mimetype + "'." );
+    return static_cast < Class >( metaclass->Create( args... ) );
+}
+
+In that way, the metaclass only create the correct instance of the resource object. The resource object is then casted to 
+the correct derived object. The metaclass object should encapsulate creation of any external resource associated to a mime
+type. Also, the metaclass should intercept exceptions throwed by resource's constructors to return a nullptr with an error.
+Loading a shader should be done as follow:
+
+auto shader = Root::Get().LoadResourceFromFile < Shader >( "myshader.vert" );
+
+And the program should be created giving a list of shaders. The problems comes from D3D that does not require linking and
+OpenGL that require linking of the resulting shaders to be operational. The program can be loaded by giving it its shaders
+directly or giving it the files to be loaded for each stages. However, stages are different for each APIs and loading is
+also different. D3D needs the main function name to be loaded, OpenGL don't. I think, those parameters should be givable
+in a structure when loading shaders objects, like the following:
+
+struct ShaderParameters
+{
+    String m_main   /! Name of main function.
+    Stage  m_stage  /! Name of stage to load this shader. (OGL, optional, not needed) (D3D, needed, not optional)
+    String m_file   /! File where to load the shader.
+    String m_target /! A custom arg to let user specify the compiling target. On OpenGL, it may be 'glsl_4_0' and on D3D
+                    /! it corresponds to 'vs_4_0' , etc. Notes that on OpenGL devices, this member is also optional.
+};
+
+Notes that in this system, the plugin is free to create a new mimetype for given files to register its metaclass. 
+
+11.6.3. Notes on the Metaclass and Metaclasser subsystem.
+
+As it was studied while implementing Metaclass, it was easier to let the user manage one more parameter to the create 
+function and pass a 'va_list' object to the resource to deduce its own arguments while constructing the object. However, 
+variadic template and 'sizeof...' operator let create a 'Create' function that deduce number of arguments and passes them
+directly to the virtual 'DCreate' function of the derived class. 
+A Resource however should deal with variable arguments by using va_arg function, like the following example:
+
+( ExampleResource::ExampleResource( va_list& args ) :)
+Resource( *va_arg( args , String* ) , 
+          *va_arg( args , MimeType* ) ) ,
+m_num( va_arg( args , int ) ) , 
+m_float( va_arg( args , float ) )
+{
+    
+}
+
+The above function is not type-safe at all. Any object could be given to the function and the user must be careful about
+what he give to those constructors. Generally the constructor must be well documented in order to be able to retrieve 
+which are the arguments, like the following:
+
+/// \param args Represents the arguments for this function:
+///             (int)    num :  First number to give. 
+///             (float)  num2 : Second number to give. 
+///             (Struct) str :  Arbitrary structure to give to the function.
+
+Also, C++ references are not usable by va_arg. This means only pointers can be used or simple POD values. To pass a 
+String, instead of passing 'const String&' pass 'const String*' and use '*va_arg( args , const String* )' to use a 
+'const String&'.
+
+11.6.4. Root modification to conform Metaclass/Resource/Metaclasser/MIME new subsystems.
+
+Manager class is now deprecated. Resource's lifetime is managed by other objects. However, we want to be able to do the
+folowing: 
+
+auto svertex = context->CreateVertexShader( "myshader.vert" );
+auto program = context->CreateProgram( svertex , null );
+
+But, if the shader's file 'myshader.vert' is already loaded, we would like to be able to retrieve it and not loading it
+twice. However, you may also want to load more than once the file with different parameters. How can we solve this problem?
+And more, we would like a generic loading function with arbitrary parameters, using the metaclass subsystem.
+
+auto svmime = mimedb->GetMimeForFile( myfile );
+auto svmeta = metaclasser->GetMetaclass( svmime );
+auto svshad = svmeta->Create( 3 , &ctxt , &myfile , null );
+
+We have multiple solutions: (1) Create a new Manager class which check if the resource is already loaded and with the same
+parameters. This may lead to redundant code and slower resource creation. (2) Let the metaclass remember when an object
+is created. Also, we may add a simple boolean to let the metaclass know if the user wants to reload the file or not.
+
+auto svshad = svmeta->Create( bool , 3 , &ctxt , &myfile , null );
+
+If false, it will return the last resource created (if not expired) and load a new one if expired. If true, the metaclass
+will replace the last resource created with new one. This solution is the best one as Metaclass's place is growing up. 
+Manager is deprecated and will be erased. In the same way, ResourceLoader has no purpose and should be erased.
+
+12. OpenGL Shaders implementation: simple and easy interface.
+
+It was though to create a generic Gl3Shader interface that would generate and compile the shader file by using either a 
+CBuffer for binaries or a String to load shader from files. Derived Gl3VertexShader, Gl3FragmentShader, Gl3ComputeShader, 
+etc. just give the Gl3Shader the type of shader to create, and the correct Metaclass and MIME type to the MIME database
+and Metaclasser. 
+
+Gl3Shader can generate a shader from file by following those simple steps:
+- glCreateShader
+- glShaderSource
+- glCompileShader
+
+Gl3Shader can generate a shader from binaries by following those simple steps:
+- glCreateShader
+- glShaderBinary
+
+Notes: glShaderBinary is valid only since OpenGL 4.1. I don't know how to load a compiled shader binary to save it to a
+file, even if i know how to get the shader binary format. I think loading from a CBuffer < char > will have to pass an
+additional ShaderBinaryParams structure to the function to load correctly the binary. This structure should be available
+when saving the actual binary to a file, in order to be passed later. Actually loading from a file is compatible with
+OpenGL 3 and is much more easier, so let's see that after. 
+
+12.1. Designing a simple Error handling processing: A global ErrorCenter.
+
+I know, making global classes are NEVER recommended. However, let's see the following example: if Root creation fails and
+we need it to use a simple Error handling process, how can we do that ? More, how can we make Metaclass objects handle
+exceptions through the same process ? I answered this question with a simple ErrorCenter object. This object hold an 
+Emitter that will send synchroneously Error Events to registered listeners. Those listeners can do whatever they want to, 
+keeping in mind that an Error 'RootInvalidCreation' will lead to undefined behaviour if the listener uses the Root default
+logging channel. So the listener should wisely use an other Channel than the Root object *only* if Root is not initialized
+yet. For any other Errors, it can use the Root logger. 
+The ErrorCenter makes any class able to send their own error through an std::exception object held by const-reference. This
+object hold the real error and the real message might be obtained by using 'std::exception::what()' function. 
+
+12.2. Adding a new constructor possibility for Metaclass objects.
+
+While creating the Shader class, it became obvious creating a Resource from a generic std::istream was a simple solution to
+take care of raw strings and any other inputs for the derived class, while maintaining a big difference with the file's 
+constructor. This way, a shader can be constructed from a file, or directly from its source. The new constructor looks as:
+
+Resource( std::istream& is , va_list& args );
+
+va_list is still provided to let the user set custom properties for the loaded resource. Also, i found a 'simple' way to 
+instantiate the derived resource without using the Metaclasser and MIME interface: 
+
+auto res = std::static_pointer_class < Derived >( Metaclass<Derived>().Create( ... ) );
+
+The Metaclass passes correctly the va_list args and the static_cast is necessary obviously because Metaclass only returns
+a pointer to a Resource object. 
+
+12.3. Implementation leads to a new problem: how to handle interleaced buffers and separate buffers ?
+
+This relates to render of the VertexCommands. When rendering a vertex command, the driver must associate the vertex layout
+to the vertex buffers holded in the command. However, OpenGL makes this link by using 'glVertexAttribPointer', which 
+require the stride between two values in the buffer and the offset in the buffer for the first value. D3D uses a similar
+process by using 'D3D11_INPUT_ELEMENT_DESC' structure where the given slot corresponds to one vertex buffers. This means
+that the buffer in slot 0 may be used more than once by the layout to determine input data. The generic render process 
+should know look like:
+
+let layout = program.layout ;
+let components = command.components ;
+
+for ( auto component : components )
+{
+    let buffer = component.buffer ;
+    let stride = component.stride ;
+    let offset = component.offset ;
+    program.bindAttribute( buffer , stride , offset );
+}
+
+However, here we have some problems. (1) How do we know the stride and the offset of the data for each component ? (2) How
+do we bind one attribute on D3D ? As a similar function to glVertexAttribPointer does not exist. 
+
+12.3.1. Solution to know stride and offset.
+
+The easiest solution is to say the user has to know it. Imagine an OBJ Mesh loader, it can create the vertex component this
+way and provide every informations we need:
+
+( interleaved buffers (one buffer) mode: )
+
+let buffer = objmesh.buffer ;
+let components = VertexComponents ;
+components[Component1] = { buffer , buffer.stride , 0 };
+components[Component2] = { buffer , buffer.stride , sizeof( Component1 ) };
+components[Component3] = { buffer , buffer.stride , sizeof( Component1 ) + sizeof( Component2 ) };
+
+( separated buffers mode: )
+
+let buffers = objmesh.buffers ;
+let components = VertexComponents ;
+components[Component1] = { buffers[0] , buffers[0].stride , 0 };
+components[Component2] = { buffers[1] , buffers[1].stride , 0 };
+components[Component3] = { buffers[2] , buffers[2].stride , 0 };
+
+( rendering the vertex command: )
+
+let components = command.components ;
+
+for each ( component in components )
+{
+    MakeAttribute( component );
+}
+
+If this solution seems simple, it has some drawbacks. The user has to specify itself (or indirectly) the 'layout' for each
+components. No check is done before using the components for the currently bound program. So we may have an additional step
+to check if the component's layout match the program layout, or we may use the program's layout and divide the interleaved
+or separated generation to the vertex command. 
+
+( interleaved buffers mode: )
+
+let buffer = objmesh.buffer ;
+let components = VertexComponents ;
+components[VertexComponent::Position4] = { buffer , buffer.stride , 0 };
+(...)
+
+( rendering vertex command: )
+
+let components = command.components ;
+
+( D3D: ) D3D_INPUT_ELEMENT_DESC elements [components.size];
+( D3D: ) Vector < ID3D11ResourceShaderView* > inputbuffers ;
+
+for each( component in components )
+{
+    let buffer = component.buffer ;
+    let stride = component.stride ;
+    let offset = component.offset ;
+    let alias  = component.alias ;
+    let attribute = program.getAttribute( alias );
+    
+    ( D3D: )
+    
+    D3D_INPUT_ELEMENT_DESC element = { ... };
+    elements[attribute.slot] = element ;
+    inputbuffers.push_back( buffer.d3dview );
+    
+    ( OPENGL: )
+    
+    let element_type = component.element_type ;
+    let element_size = component.element_size ;
+    buffer.bind();
+    
+    glEnableVertexAttribArray( attribute.slot );
+    glVertexAttribPointer( attribute.slot , element_size , element_type , component.normalized , stride , offset );
+}
+
+( D3D: ) context -> IASetInputLayout( elements );
+( D3D: ) context -> IASetVertexBuffers( inputbuffers );
+( D3D: ) context -> IASetIndexBuffer( command.indexbuffer );
+
+let elcount = command.getElementCount();
+let eltype  = command.getElementType();
+
+( OGL: ) glDrawElements( GL_TRIANGLES , elcount , eltype , command.indexbuffer.glid );
+( D3D: ) context->Present( ... );
+
+So, in this complicated solution, the link is done by the sentence 'program.getAttribute( alias )'. This explains that the
+different components must be linked by 'purpose' by the user (like 'VertexComponent::Position4') and then this alias is 
+linked to an internal attribute in the program. How the program does know the alias must be done either in an external 
+loading system (like a script file) or by the user. 
+
+( Loading a program: )
+
+let program = renderwindow.createProgram( ... );
+program.setAttribute( Attribute::Position4 , "in_position" );
+program.setAttribute( Attribute::Normal4 , "in_normal" );
+program.setAlias( Alias::MaterialTextureDiffuse , "tex_diffuse" );
+
+Then the solution mentionned above works. However, VertexComponent enumeration is only relevant for the type of the 
+component, so it must be created a new enumeration class like Alias but for Attributes, let's say Attribute. This class
+will hold purpose for Attributes defined by users. A type check can be performed if the VertexAttrib class is like:
+
+struct VertexAttrib
+{
+    uint32 m_slot ;
+    String m_name ;
+    uint32 m_type ;
+}
+
+struct VertexComponent
+{
+    uint32 m_elcount ;
+    uint32 m_type ;
+    Buffer m_buffer ;
+    uint32 m_stride ;
+    uint32 m_offset ;
+    Attribute m_alias ;
+}
+
+let component = { Attribute::Position1 , VertexComponent::Position3 , positions , elsize , 0 , elcount };
+let component2 = { Attribute::Normal1 , VertexComponent::Normal3 , normals , elsize , 0 , elcount };
+
+let program = ( ... );
+program.setAttribute( Attribute::Slot0 , 0 );
+program.setAttribute( Attribute::Position1 , 0 );
+program.setAttribute( Attribute::Normal1 , 0 );
+
+In this solution, we can see that every Attribute::Slot$X$ can be bound to the given slot in the program when loading it. 
+However, other attributes like Attribute::Position1 must be bound by the creator of the program. An external file that
+describe those binding is in study, like: 
+
+Program my_program 
+Shader GLSL my_vertshader.vert 
+Shader GLSL my_fragshader.frag 
+Attrib Position1 0 
+Attrib Normal1 1 
+
+The program is responsible for setting correct informations and the user of this program must bind its data to the correct
+slots. The VertexCommand should now be redefined as the simplest drawing command for a Driver, implying multiple 
+VertexComponents objects for one or more buffers and an index buffer (optional). The VertexCommand as long as the Vertex
+Components should not own the buffers (the mesh class is responsible for that) and the new structure would be:
+
+struct VertexCommand
+{
+    Vector < VertexComponent > m_components ;
+    uint32                     m_vertcount ;
+    Weak < Buffer >            m_indexbuf ;
+    uint32                     m_indexcount ;
+    IndexType                  m_indextype ;
+}
+
+let command = rendercom.command ;
+
+for each component in command.components 
+{
+    program.bind( component );
+}
+
+command.indexbuffer.bind();
+driver.draw( command.indexcount , command.indexbuffer , command.indextype );
+
+# OR , if command.indexbuffer is invalid:
+
+driver.draw( command.vertcount );
+
+The VertexCommand is a smallest draw unit. If it contains an index buffer, it will send it to the driver to draw indexed
+buffers array datas. If it does not, it will send only datas for the vertex buffers. Components are bound to the program,
+as they are looked to be actual VertexAttrib in the program's object. This is the VertexComponent's creator to assert that
+they will match the program's attributes. If a component does not match any program's attributes, it is discarded. 
+
+13. Proposition for Material managements. 
+
+Materials can be loaded from an external file (and thus with an 'istream' object) but can also be configured by any 
+developer. Materials are shared between nodes, meshes, or any object that may use or load them. Thus, they should be 
+accesible from anywhere in the Engine. A Material migth be loaded by a Mesh at creation (for example an OBJ file may try
+to load an MTL external file), or by a user using the Metaclass subsystem and the correct MIME type. 
+
+let material = Metaclasser.Create( "material.mtl" );
+
+Untill this material must be accessible through the whole engine, a MaterialManager must be instanced by the Root object to
+organize those Materials. 
+
+MaterialManager.AddMaterial( material );
+
+When a mesh loads a material that has already been loaded (as the "material.mtl" file), the manager should be able not to
+reload the material and directly return the previously created one. However, the MIME type system along with Metaclass 
+makes the mesh process the file like this:
+
+let material = MaterialManager.find( "material.mtl" );
+if ( !material ) material = Metaclasser.Create( "material.mtl" );
+
+MaterialManager could have a simple function to load material from an external file, or from blank. This function could 
+also act as a Get or Create if the file was not loaded already. 
+
+13.1. Material structure design.
+
+What do a Material should be ? We already saw that RenderCommands binds individuals parameters for the current program and
+its VertexCommands. For each rendering passes, a material is prepared to the pass's program. In a sort of Multipass Node, 
+we can imagine a node with multiple material / program pairs to draw an object in multiple pass. 
+
+A Material is a set of parameters that are accessible and modificable by anyone else, without having to set parameter's 
+normal settings. This implies the Material structure may look like:
+
+struct Material
+{
+    Map < Attribute , ParameterValue > m_parameters ;
+}
+
+However accessing a parameter like MaterialTextureDiffuse is slower than accessing it directly with a stored variable. As
+the amount of RAM is increasing day and day, a quicker but heavier structure looks like:
+
+struct Material
+{
+    vec4                      m_ambient ;
+    vec4                      m_diffuse ;
+    vec4                      m_specular ;
+    Weak < Texture >          m_texdiffuse ;
+    Weak < Texture >          m_texambient ;
+    Weak < Texture >          m_texspecular ;
+    WeakVector < Texture >    m_textures ;
+    float                     m_shininess ;
+    Vector < ParameterValue > m_customs ;
+}
+
+If this structure is way heavier (if no many parameters are used), it is also faster as the map's access require much more
+computations. 
+
+13.2. Material Manager: a new type of singleton'd manager. 
+
+While thinking about how a MaterialManager should be implemented, i though two operations should be valid to instanciate
+the MaterialManager to create objects:
+
+let material = MaterialManager::Create();
+let material = Root::Get().GetMaterialManager()->Create();
+
+MaterialManager can be a specialized manager to material: 
+
+class MaterialManager : public Manager < Material > {};
+
+A Manager can be instanciated only by the Root class. It is a singleton, but the instance is owned by Root. This way, Root
+manages the manager's lifetime and the manager can be accessed from anywhere in the Engine without instancing Root. The 
+Manager should 'manage' the lifetime of created objects. A Material is managed by the MaterialManager, and this make sense.
+This way, Create* functions should return Weak pointers. 
+
+template < typename Class >
+class Manager 
+{
+    static Weak < Manager > s_instance ;
+    
+    /// Uses Resource::Resource( void )
+    static Weak < Class > Create( void );
+    
+    /// Uses Resource::Resource( istream& , va_list& )
+    static Weak < Class > Create( istream& , ... );
+    
+    /// Uses Resource::Resource( const String& , va_list& )
+    /// bool is true if you want to force reloading the file even if
+    /// it has already been loaded. 
+    static Weak < Class > Create( const String& , bool , ... );
+    
+    /// Uses Create( string , false , ... );
+    static Weak < Class > CreateOrGet( const String& , ... );
+    
+    /// Releases the class's object. 
+    static void Release( Weak < Class >& );
+}
+
+A Manager is created by creating a new derived class. A Manager is also an Emitter which can emits ManagerEvents of 
+type ManagerCreatedClassEvent and ManagerReleasedClassEvent.
+
+14. Finally, a generic DrawRenderCommand function for Driver !
+
+After aaaaall those works, i can finally make a generic Draw( RenderCommand ) function for my Driver class. When called, 
+no parameters have to be bound to the current program. The RenderCommand hold one or more VertexCommands. Each of them will
+lead to a specific Draw command. 
+
+let rendercommand = args.rendercommand ;
+
+for each vertexcommand in rendercommand 
+{
+    draw( vertexcommand );
+}
+
+This seems very simple, but at least it should make the deal with Draw( VertexCommand ):
+
+for each component in vertexcommand.components
+{
+    bindComponent( component );
+}
+
+if ( vertexcommand.isindexed )
+    drawIndexed( vertexcommand )
+else 
+    draw( vertexcommand )
+    
+14.1. Vertex Array Objects problem on OpenGL3+.
+
+Untill OpenGL core version, a VAO is required to bind attribute to the actual program. This is problematique, because the
+VAO actually is specific to the vertexcommand. However, we already know that creating a VertexCommand also leads to the 
+creation of context specific buffers (vertex + index for now). We have two solutions: (1) the VertexCommand could also be
+specific for the context, allowing us to set optimized data in the vertex command. (2) The context could construct for 
+itself a specific structure related to the newly created VertexCommand, thus managing itself the specific data. 
+Solution 1 gives us a faster retrieval of those datas: a pointer to the structure is sufficient to retrieve the actual data
+but if the context is destroyed, the data in the VertexCommand structure will be lost and no one will know if the data will
+be freed or not. 
+Solution 2 gives us more control of the actual data and when the context is destroyed, it can also destroy the specific
+data from the VertexCommand. However, accessing that data (which is a major problem as it will access it every frame) is
+slower than getting a pointer from the VertexCommand object. 
+
+Thus, the best solution would be an hybrid between those two. I was thinking about this: the VertexCommand will absolutely
+never read or write this data. By this, i mean that only the context could read/write data from this VertexCommand. So, i 
+would consider making an available raw void* pointer only accessible for the Context object, and the actual owned data 
+would be in the Context object, this way: 
+
+Context { 
+
+    [...]
+    Vector < CustomVertexCommandData > customs ;
+    
+}
+
+VertexCommand {
+
+    [...]
+    void* custom_data ; // Accessible only for the Context, and the Context set it as a pointer to 
+                        // CustomVertexCommandData*. It is initialized by VertexCommand to nullptr. It cannot be copied, 
+                        // but as VertexCommands are shared, this is not a problem. 
+
+    void* ContextVisit( const ContextVisitor& visitor ) { return custom_data ; }
+}
+
+ContextVisitor {
+
+    private ContextVisitor();
+    public friend Context ;
+
+}
+
+When getting the data in Context::Draw : 
+
+let visitor = ContextVisitor();
+let data    = static_cast < CustomVertexCommandData* >( command->ContextVisit( visitor ) );
+let VAO     = data->VAO ;
+
+bind( VAO );
+
+A simple optimization for those VAO could be done if we could know when the VAO should change. The VAO (or any vertex
+input) should be updated only if the program's layout changed, or if the vertex command's components changed. For both 
+data, it is actually impossible to know when did they change. Also the VAO change if the buffers change. Those three 
+conditions are actually impossible to know for the specific driver/context. A buffer can have a 'vao_updated' field, as it
+is created by the context. A VertexLayout could have a 'vao_updated' field to as it is created by the Gl3Program object.
+But for now, it is far way too complicated so a faster (but lazy !) solution is to rebuild the VAO each VertexCommand's 
+draw. I know it suck a bit but i don't know yet how to bypass this behaviour. 
+
+14.2. VertexCommand drawing: Context or Driver function ?
+
+As it could be sensefull to let the driver draw the vertexcommand, it may be advantageous to make this a Context's 
+function. First, for evident multicontext/multithreading purpose. And, because a context must be bound to make all those
+functions work. So, it will be a Context's function. 
+
+15. Management of a basic Viewport supported by the RenderTarget interface.
+
+As we know, the RenderTarget interface is here to take care of multiple... rendertargets. It could be a Framebuffer for 
+OpenGL, a ID3D11RenderTarget for D3D11, or managing a Window if the RenderTarget is a RenderWindow, okay. When drawing the
+render target, i think we can let the user choose the viewport. The RenderWindow can have an option to autoresize (default
+desired behaviour) or not the rendertarget viewport to the surface size. Okay, this is a cool concept. 
+
+15.1. Definition of a Viewport. 
+
+A Viewport is a Surface in absolute or relative pixels coordinates where the Context will be able to draw something. When
+using relative coordinates, it will be relative to the context's current maximum surface. From MSDN: "A Viewport maps
+vertex positions (in clip space) into render target positions". As DirectX does not support relative viewports, and as it
+would lead to more complications, only Viewport with absolute values will be designed here (for now).
+
+struct Viewport
+{
+    Size  size ;
+    Point origin ;
+}
+
+OpenGL require its viewport origin point to be the bottom-left point of the resulting rectangle, but D3D11 requires it to
+be the top-left point. A convertion will be done for D3D11, as the major API design for the Engine is OpenGL. When the 
+rendertarget is drew (RenderTarget::Draw is called), the viewport is bound by the context. Definition of the viewport is
+done by the user. 
+When the render target is a RenderWindow, 'autoresize' flag will produce the viewport to be updated to the surface size 
+automatically, by registering an internal surface listener for the registered surface object. 
+
+15.2. Autoresize notes and new listener definition. 
+
+When a listener is created only to link one task to another, we would like to have a definition like this:
+
+surface -> AddListener( std::make_shared<AutoListener<SurfaceResizedEvent>>( [this]( const SurfaceResizedEvent& event ){
+    
+    m_viewport.size   = event.size ;
+    m_viewport.origin = { 0 , 0 };
+    
+}) );
+
+This can be achived by using a class template ' template < class EventClass , typename Callable > '. Callable object will
+be called only if the received event corresponds to the EventClass submitted. 
+
+16. Defining a generic SceneNode as a derived of the Object interface. 
+
+While i was thinking about making a sort of Camera, and about controlling objects from some different hardware or other 
+logical things, i thought about a SceneNode definition: does the SceneNode should be able to act on the rendering by 
+modifying values, acting as rendercommand parameters, but without drawing anything ? And how to achieve this ? It would 
+lead to an oriented scene graph, where for example, if we must pass by a camera node, it would bind parameters to the 
+program passing by the given render command. This solution has may aspects: it can customize the camera rendering for 
+different programs as rendercommands are classed by program and material. However, rendercommand without materials are not
+classable and therefore, a rendercommand that does not have any material may not even be added to the render command group.
+We could imagine a third group of render queues in the render pass that are not attached to any material and thus, are 
+drawed always with the belonging program. Those rendercommand could be drawed objects (that does not have any materials)
+but also not drawable render commands, that could bind some custom parameters. 
+
+However, how to be sure the render commands will be drawed in the correct order ? First, rendercommands are always drawed
+from a linear vector object that is iterated in normal order. Adding a rendercommand is guaranteed to be drawed as the last
+of its containing object. For example, if a light (not drawable object but with a material, so it should bind its 
+parameters before any other objects related to this light are drawed) is added, it will be added to a renderqueue with its
+material and, might be the only object with this material. 
+
+How could we know this light will bind its parameters before objects with other materials ? We could say that a renderpass
+should always draw its rendercommands in the following order: (where 'sta' stand for 'static' and 'dyn' for 'dynamic' ) 
+
+[ not drawable , no material ]
+[ not drawable ,    material ]
+[ sta drawable ,    material ]
+[ dyn drawable ,    material ]
+
+And therefore two additionals vectors might be added with a map containing not drawable commands by material. But we can
+think for another way: if the scene graph is an oriented graph, the 'way' for drawing an object will pass by not drawable
+nodes. Their material could be aggregated to the final node's material, and this material could be used to draw the object.
+For example, consider the scene of a triangle illuminated by a single point light and a camera around it. The 'way' to 
+render the triangle will be: Camera -> Light -> Triangle. Triangle's material will aggregate camera's and light's materials
+and every parameters will be bound correctly in the command, without adding specific vectors or maps (and therefore 
+reducing the number of copies to access this data). And on top of that, multimaterial rendering is simplified, as it could
+only be a pass-through node with one or more children in one line like: material1 -> material2 -> material3 -> object. At
+least, a positionable node would be the default node, giving a model matrix to the final object and giving control over
+subnodes (aggregating its data). 
+
+16.1. A role for a big Scene object, or NodeManager ?
+
+Yes, i think so. A Scene object would be responsible for taking care of the node's organization. Some external nodes, as
+camera's nodes, or light nodes, might be treated differently. Light's nodes could be aggregated only if the current node's
+position is compatible with the light's node clipping distance. 
+A Scene can be rendered only from one camera at a time. However, lights number should not be limited. And how can we 
+compute the closest neighbour if we have to aggregate position from multiple nodes ? 
+Position is aggregated only by PositionNode. In an octree scene graph, a position node could hold its eight neighbourgs and
+organize them independently of what they hold, as they can only hold other types nodes or their eight position nodes.
+
+16.2. Definition of a Node purpose and base structure.
+
+A Node must have only one purpose, one parent node and one or more children nodes. Parent and Children are not related to
+the node's purpose, but a derived node can assimilate a second indirect parent like PositionNode to remember the position
+parent in the node hierarchy, for example. 
+A Node must have a virtual 'Aggregate' function that must aggregate its components in the final material. As parameter's 
+priorities should always be from children to parent (parent's parameters are always less prioritized than children's one),
+the Aggregation routine should be done directly from the render command node to its parents (inversed iterating). For 
+example, given the given graph:
+
+Camera -> Position -> Light -> Material
+       -> Position -> Material -> Mesh -> Command
+                                         -> Submesh -> Command
+                             
+Aggregate routine will come from 'Position/Position/Mesh/Submesh/Command' and 'Position/Position/Mesh/Command'. Two 
+AggregateNode will be formed. The first Aggregate will aggregate the nodes in the following order:
+
+Command -> Submesh -> Mesh -> Material -> Position ( Position will look for neighbourgs lights ) -> Light (Aggregation of
+its material) -> Camera.
+
+The second Aggregate routine will do: 
+
+Command -> Mesh -> Material -> Position ( Position will look for neighbourgs lights ) -> Light (Aggregation of its 
+material) -> Camera.
+
+AggregateNode will hold the CommandNode (which retain the RenderComand unit) and on update, will update the rendercommands
+to the render target only if needed by using the created aggregated material. As Per-Material maps are stored by using only
+references to a Material ID, and as this Material ID is unique for an Aggregated Node, when a Material changes for an 
+Aggregated Node, no update is needed to reinsert the Aggregated Node's RenderCommand.
+
+16.3. Bilan to AggregateNode.
+
+AggregateNode is a Node with one parent, which is always a CommandNode. It cannot be aggregated by other nodes. Its 
+Material is an aggregated Material from the Aggregate routine performed by each CommandNode to their parents. They act as
+Objects for the rendertarget and update their command using the aggregated material constructed.
+Creation and modification of aggregated materials should be done in a separate thread from AggregateNode update. This leads
+our Engine to a minimum of three threads for rendering: Material aggregation thread, Object's update thread, main thread.
+As Aggregation of the material does not modify its ID, blocking the Object's update thread while the Material is being 
+aggregated has no purpose and thus must not be done.
+
+16.4. Management of the Camera.
+
+CameraNode is a special Node that aggregate an inversed model matrix (view matrix) corresponding to the camera's position
+to the aggregated material at parameter 'MatrixView', 'Matrix3View'. Projection Matrix, and thus, 'MatrixProjection', 
+'Matrix3Projection', 'MatrixViewProjection', 'Matrix3ViewProjection', and other related projection matrix will be computed
+at object's update stage as the rendertarget will be available. 
+
+16.5. Aggregation of PositionNode. 
+
+PositionNode should aggregate the material accordingly to Aggregation Settings. Scene might want PositionNode to also 
+aggregate neighbourg's nodes only if they are lights (this can be done by checking neighbourgs nodes and looking for lights
+children). But depending on aggregation mode, it might not want to aggregate those lights. For example in a deffered 
+shading configuration, aggregation will aggregate lights surrounding objects, but object's update must not pass those 
+lights to the final rendercommand. Or the pass's program will not give you the possibility to input lights, and that's all.
+But all this light data is computed internally. How will look like a scene graph for a deffered shading with one texture
+target and one window target ?
+
+( Camera ) -> Position -> Mesh -> Command // This graph is okay for the first target. But the G-Buffer associated to the 
+                                          // texture target will not receive material informations. So this is not 
+                                          // acceptable.
+                                          
+We could separate by target informations. But that will leads us to extra user work and more data to perform. We could use
+the ability of program to select only the parameter it wants. But the second target has a different camera, with a 
+different object to draw (a square with a texture). So... it is a different scene. 
+
+( Camera2 ) -> Position2 -> Square -> Command
+            -> Position2 -> Light
+            -> Position2 -> Light
+
+So the first target will update only the first scene, and the second target will update the second scene. Seems legit. But
+what i would want is the ability not to separate lights from both Scenes. However, this seems impossible for now. If you
+want deferred shading, you have to separate lights from other objects. But, how do i compute surrounding lights for a given
+object ?
+
+16.6. Usability of a shared SceneGroup for position nodes. 
+
+I could create a sort of SceneGroup that links every position nodes between them. This SceneGroup will be responsible for
+organizing the Scene's position nodes. Then the Scene is updated by its related rendertarget, but its position nodes will
+be linked to other position nodes in other Scene and aggregated material will also be. Imagine if you have this concept in
+the two above graphs: Position's mesh will be related to light and might have it as a neighbourg. When aggregating it, its
+position must be aggregated only if it is a parent, but its children must not be aggregated as they are not related to this
+graph. So a SceneGroup must share only positions between graphs. 
+It should be possible to add a node without enabling sharing between graph, as for the Square position node. The Square 
+position node should have a flag to tell the SceneGroup 'no i am not shared, please don't use me'. It can be called 
+'independent' nodes.
+
+16.7. Structure of those Scene objects.
+
+Only AggregateNode should be updatable by the rendertarget, as they input rendercommands to it. Other nodes should not be, 
+but must be aggregable by the scene graph. 
+
+struct Node 
+{
+    Vector < Shared < Node > > Children ;
+    Weak < Node > Parent ;
+    Weak < SceneGroup > group ;
+    Weak < Scene > graph ;
+}
+
+struct AggregateNode : Node , Object
+{
+    Weak < Material > Material ;
+    Weak < RenderCommand > RenderCommand ;
+}
+
+struct CommandNode : Node
+{
+    Shared < RenderCommand > Command ;
+}
+
+struct MeshNode : Node
+{
+    Shared < CommandNode > Command ;
+    Vector < Shared < MeshNode > > Subcommands ;
+}
+
+struct MaterialNode : Node
+{
+    Weak < Material > Material ;
+}
+
+struct PositionNode : Node 
+{
+    Position position ;
+    Shared < PositionNode > posparent ;
+    Vector < Shared < PositionNode > poschildren ;
+}
+
+struct CameraNode : Node 
+{
+    Shared < Camera > camera ;
+}
+
+Difference between shared and not shared nodes: first, only PositionNode can be shared between graphs. Next, a shared
+PositionNode in graph2 can be aggregated by its children in graph1. Its surrounding nodes can be accessed from every graphs
+in the group. In fact, a shared position node is virtually added to every graph but without the capability to generate a
+command node. Its children are processed only in the graph it is added at first. A non-shared node is not accessible from
+every scene graph. 
+
+let group = Scene();
+
+let graph = group -> CreateGraph();
+let node1 = graph -> CreatePositionNode( position , true );
+let node2 = graph -> CreatePositionNode( position2 , false );
+
+let graph2 = group -> CreateGraph();
+let node3  = graph2 -> CreatePositionNode( position3 , false );
+
+In this example, creating 'node3' will take in account 'node2' as it is shared between the different graphs. How to 
+implement this functionality ? A scene graph must contain at least the first PositionNode. But when adding a position node
+to a scene graph, how will it be added taking in account shared position nodes ?
+
+( SceneGraph: CreatePositionNode )
+{
+    let node = new PositionNode( position , shared );
+    _firstnode -> Add( node );
+    
+    if ( node -> IsShared() )
+    _group -> AddSharedNode( node );
+}
+
+Or i can do it another way. When seeing the above graph with the two targets, i though this: can we have a Scene, which 
+hold a SceneGraph to contain every PositionNode, and CameraGraph which are Object updatable by a rendertarget and that 
+contains a list of Aggregable nodes ? If so, this means to construct a RenderNode ( with a mesh, a position, a material and
+a program): 
+
+let scene = new Scene();
+let node  = scene -> CreateAndAddRenderNode( mesh , position , material , program );
+
+let camgraph = scene -> CreateAndAddCamera( camera );
+camgraph -> AddNode( node );
+target -> AddObject( camgraph );
+
+let camgraph2 = scene -> CreateAndAddCamera( camera2 );
+camgraph2 -> AddNode( node2 );
+target2 -> AddObject( camgraph2 );
+
+( Scene: CreateAndAddRenderNode )
+{
+    let positionnode = new PositionNode( position );
+    let programnode  = new ProgramNode( program );
+    let materialnode = new MaterialNode( material );
+    let meshnode     = new MeshNode( mesh );
+    positionnode -> AddChild( programnode );
+    programnode  -> AddChild( materialnode );
+    materialnode -> AddChild( meshnode );
+    
+    _graph -> AddPositionNode( positionnode );
+    return new RenderNode( positionnode , programnode , materialnode , meshnode );
+}
+
+( SceneGraph: AddPositionNode )
+{
+    if ( position -> IsFixed() )
+    _fixednodes.push_back( position );
+    
+    else 
+    _rootnode -> AddChild( position );
+}
+
+( CameraGraph: AddNode )
+{
+    let aggregate = node -> GetAggregatedNode();
+    _aggregates.push_back( aggregate );
+    _rendernodes.push_back( node );
+}
+
+In aggregation phase, the CameraGraph will call AggregateNode::Aggregate() to perform aggregation. In Object's update 
+phase, CameraGraph is updated by the target and will update aggregated nodes to the target by iterating over '_aggregates'
+vector. RenderNode is a particular node created to hold a simple render unit, i.e. position, mesh, material, program. Notes
+that a render node is not always drawable, if it is for example only a light without material. Aggregation process will 
+still update the aggregated material from those nodes. A MeshNode should be able to find its AggregatedNode by using the
+CommandNodes generated. Those generates AggregatedNodes with unique Materials. 
+If the Scene has only one CameraGraph, it can be advantageous not to call always 'CameraGraph::AddNode' for each node you
+add to the scene. As a drawable render node is always related to a CameraGraph in order to be drawed by a target, 
+'CreateAndAddRenderNode' could check if the mesh given is valid and add the render node to the default camera graph. 
+However, this implies that 'CameraGraph::AddNode' can change the node's parent camera graph to let it be the current one.
+A new implementation of 'CreateAndAddRenderNode' could be:
+
+let scene = new Scene();
+
+let camgraph = scene -> CreateAndAddCamera( camera );
+target -> AddObject( camgraph );
+
+let camgraph2 = scene -> CreateAndAddCamera( camera2 );
+target2 -> AddObject( camgraph2 );
+
+let node  = scene -> CreateAndAddRenderNode( mesh , position , material , program , camgraph );
+let node2 = scene -> CreateAndAddRenderNode( mesh , position , material , program , camgraph2 );
+
+( Scene: CreateAndAddRenderNode )
+{
+    let positionnode = new PositionNode( position );
+    let programnode  = new ProgramNode( program );
+    let materialnode = new MaterialNode( material );
+    let meshnode     = new MeshNode( mesh );
+    positionnode -> AddChild( programnode );
+    programnode  -> AddChild( materialnode );
+    materialnode -> AddChild( meshnode );
+    _graph -> AddPositionNode( positionnode );
+    
+    let rendernode = new RenderNode( positionnode , programnode , materialnode , meshnode );
+    
+    if ( mesh && mesh.IsDrawable() )
+    camgraph -> AddNode( rendernode );
+    
+    return rendernode ;
+}
+
+16.8. Usability of a ProgramNode.
+
+A node's aggregation chain should be able to change the program used by the futur aggregated command by using a ProgramNode
+right before the Position's node. The Aggregate command should also give the possibility to change the Program that will
+be used by the futur RenderCommand. 
+
+16.8.1. Inheriting facilities. 
+
+When you have the following aggregation chains:
+
+Aggregate1: Command -> Mesh -> Material -> Program -> Position 
+
+The 'Position' node will not pass the aggregation routine to its direct parent, as it is indicated in 'PositionNode' 
+documentation. However, if no program is used especially by this node, what should be the behaviour to render this chain ?
+It could be to define a default program used when creating every nodes. This program will be used if none is described.
+However, If the node is, for example a light, it should not aggregate any program to the render command (or may it ?).
+
+For now, i think the best solution is to keep track of the program when aggregating the node. When creating the node, or 
+when modifying a custom node, the behaviour might be to update every children's node to use the newly set program, or a
+default one, or anything else. This way the aggregation routine stay naive... and simple. 
+
+Aggregation routine must be modified as follow:
+
+void Aggregate( Material& material , RenderCommand& command );
+
+16.9. Material node: how to check what we have to change ?
+
+When a material node aggregates the current material with its own one, it is assumed it should aggregate only the fields
+the given material as not set yet. However, this is a bad behaviour. When we have two materials in the chain, two different
+program/material couples should be created for the Aggregated node. Because two materials for the same render command means
+two different passes with the same program, aggregation routine for a material should overwrite every statements the 
+current material has to be written by the node's one. A Render node should take this into account, and a MultiMaterial node
+should create as many aggregated nodes as it need. 
+Soooo, in Aggregation phase, the Material overwrites the given material parameters. In UPDATE phase, the material should 
+create a new aggregated node if not created yet. When the CameraGraph is updated it calls 'NeedsUpdate()' on each render 
+nodes. If render node needs update, it calls 'Update( AggregateGroup )' with the render node's aggregate group for this
+CameraGraph as argument. 
+
+If a render node is owned by more than one CameraGraph, the render node should be able to tell if it needs update *for* the
+given CameraGraph and thus, function 'NeedsUpdateFor()' is used instead. 
+
+A render node's update should modify the AggregateGroup by calling 'Update()' on its subnodes. A subnode has a chance to 
+modify the aggregate group if it needs to. For example, a Material should call 'Update()' on each child and MultiMaterial
+should call 'Update()' for each Materials. A Mesh node can create an Aggregate node with its own render command, and then
+call 'Update()' on its submeshes. 
+
+After this operation, the CameraGraph's aggregates are accurate and needs to aggregate their components by using the 
+Aggregation Routine. 
+
+Aggregation's update routine for a CameraGraph is so the following: 
+
+// (1) Let rendernodes create their aggregate nodes for this CameraGraph. 
+
+let rendernodes = this.rendernodes ;
+
+foreach rendernode in rendernodes 
+{
+    if ( rendernode.needsupdatefor( this ) )
+    rendernode.update( this );
+}
+
+// (2) Let Aggregation routine make its own way through rendernodes. 
+
+let aggregates = this.aggregates ;
+
+foreach node in aggregates 
+{
+    node.aggregate();
+}
+
+// (3) Set updated status to true, or dirty status to false.
+
+this.dirty = false ;
+
+Concurrently, SceneGraph is updated in another thread to update the graph of position's nodes. It must be called externally
+from the renderloop, so a SceneGraph::StartAsync() function is available to create a new thread for this purpose. 
+Total number of threads running for this render system is, at minima, 3: one for scene graph, one for objects' updates, and
+one for rendering loop. However, RenderPath create a distinctive thread for each additional previous target rendering and
+thus, total number of thread may differ from this basic count. Those threads added by render path are temporary and have a
+short lifetime. 
+
+16.10. Handling of Mesh's submeshes in MeshNode. 
+
+While it would be sensefull to create one MeshNode for each submesh, we may have the following problem: if someone wants to
+make a material only for a submesh, how do we make the node handle it ? If we have the following aggregation chain, how
+do we handle it ?
+
+AggregatedNode -> MeshNode (submesh#1) -> MaterialNode (mat#1) -> MeshNode (mainmesh#1) -> MaterialNode (mat#2) -> ...
+
+If encountered an aggregated chain like the above one, 'mat#2' will overwrite what 'mat#1' made. How can we bypass this
+phenomenom ? We could link the submesh's node parent directly to the main mesh's node parent, but main mesh node will 
+keep it as a child. This is not very meaningfull, but it could do the trick. However, i want to find something more 
+'clean'. We know that children's list is not very changing over time. When a mesh's children list is modified, its dirty
+flag should be true and every MeshNode updating should rebuild their aggregated nodes list in two methods:
+    - If the child is a MeshNode, this means the submesh use the same Material as the main mesh and its parent is the main
+      mesh node. While aggregating, the normal chain is passed through. 
+    - If the child is a MaterialNode, this means the submesh use a different Material. While the main mesh children list
+      keep track of the child, MaterialNode's parent is the same as the last parent's material and thus, bypass any other
+      MaterialNode present in the chain.
+     
+Or maybe we can use another solution. AggregatedMaterial could keep track of each parameters, in the following way: if a
+parameter is set, a flag is turned to 'true'. By default, all parameters are 'false'. This way when aggregating the 
+material, only unset parameters are set by the parent material. 
+
+16.11. Handling MeshNode's update: how can we know when we have to update the AggregateGroup or not ?
+
+I though about many ways. However, as the project is growing up, i need to fix some things up and summarize how the engine
+works in a relatively simple scheme. 
+
+RENDERING       <--- RenderCommands by Program and Material. This is the phase where we render every geometries. 
+
+RENDER-UPDATE   <--- Organize those rendercommands by program and material from objects. Objects are free to add or remove
+                     rendercommands from the render command group provided for the target. More generally, when an object
+                     see its render command change, it should update the aggregate group with the render command. 
+                     An AggregatedNode is an Object, and thus can be updated by a render target. However, the node's group
+                     is not a classic ObjectGroup but a CameraGraph, which only shows AggregatedNodes inside the camera's
+                     view frustrum. 
+
+SCENE-UPDATE    <--- Create render commands from the actual nodes in the scene. Aggregated materials needs to be updated
+                     by another phase, because 'SCENE-UPDATE' is called for a node only if this node is dirty. An 
+                     aggregated node is dirty when its Mesh, its Material or its Program has changed (or is dirty). When 
+                     only the Material is dirty (and not changed), this phase is ignored and will be treated in 
+                     AGGREGATION. 
+                     
+                     Management of the dirty flag is made in this phase. When a MaterialNode makes aggregated nodes, if the
+                     child mesh is dirty, the MaterialNode must remake the aggregated node for the rendercommand. However,
+                     it does not need to recreate the aggregated node but only change the reference to the rendercommand.
+                     At the end of the update phase, 'dirty' flag must be unset. However, this behaviour is the advised but
+                     not the default behaviour. 
+                     
+AGGREGATION     <--- Aggregates parent's properties for the node material. When a node is dirty (or one of its parent is),
+                     aggregation phase must be called for it in order to update its material. Then, the aggregated node is
+                     ready to be updated by 'RENDER-UPDATE'.
+                     
+16.11.1. More 'dirty' states, more concurrency, more MULTI-THREADING !!
+
+Yes, i love multithreading as it can enhance the power of a simulation very quickly. Phases RENDERING and RENDER-UPDATE
+are advised to be in the same thread, because it rely on a Context and Context thread moving is a costly operation. 
+SCENE-UPDATE and AGGREGATION may have their own thread, because they do not rely on any Context (data is abstract at this
+point). 
+
+When someone create a simple position node, this node is not added to any CameraGraph but only to the scene graph, because
+camera's graph should be composed only by aggregated nodes. However, creating a mesh node or a material node may enhance 
+the total of aggregated nodes in the graph. So, SCENE-UPDATE should create render commands AND aggregated nodes, if needed.
+Or, we can be more intelligent.
+
+In an aggregated node creation context, a scene graph should follow some rules: 
+    - MaterialNode is a bifurcation. Example:
+    
+    Po1 -> Pr1 -> Ma1 -> Me1 : 
+    
+    If we add Ma2 : 
+    
+    Po1 -> Pr1 -> Ma1 -> Me1
+               -> Ma2 -> Me1
+                    
+    What happened ? Adding a Material for this render node subtree make the second material inherits the first material
+    children, i.e. Mesh #1. When creating aggregated nodes, Material#1 will emit a node from Mesh#1 and Material#2 another
+    node from Mesh#1 but with the second material. Material node should keep track of this aggregated node as itself keeps
+    track only of pointers to those datas. 
+    
+    - MaterialNode is allowed to create an AggregatedNode. MeshNode creates a render command thanks to 'EmitRenderCommand'.
+    When we have the following tree:
+    
+    Po1 -> Pr1 -> Mat1 -> Me1
+                       -> Me2
+                  Mat2 -> Me1
+                  
+    Three aggregated nodes should be created, with couples Mat1/Me1, Mat1/Me2, and Mat2/Me1. So a MaterialNode must create
+    as many aggregated nodes as its number of meshnode children. 
+    
+    When we have the following tree:
+    
+    Po1 -> Pr1 -> Mat1 -> Me1 -> Mat2 -> Sm1
+    
+    Submesh#1 has its own material and thus, Material#2 'SCENE-UPDATE' method should be called. A MeshNode should always
+    pass 'Update()' to its children to let MaterialNodes create aggregated nodes if they are dirty. 
+
+16.11.2. Final solution for SCENE-UPDATE tree parsing and AGGREGATION reverse tree indirect parsing (Yes it sound 
+complicated but in fact it's not).
+
+I finally found a solution for node's tree parsing. With the following concept, each subclass node have its own internal
+tree, which is not related to the normal graph tree. MaterialNode has another MaterialNode parent, MeshNode has another
+MeshNode parent, etc. In this matter, each node is the root node of its children and a new tree can be created only by 
+setting one node's parent to null. 
+
+In 'SCENE-UPDATE' phase, we must create a list of AggregatedNodes, that will be added to an AggregateGroup. An 
+AggregateGroup must store those nodes by Program/Material couples, and by ID (in an ID map). When updating the scene's 
+tree, we will try to go from leaf to leaf, where leaf should always be MeshNodes. MeshNodes updates the AggregateGroup with
+their AggregatedNodes. SCENE-UPDATE provides, in descending order, the last node for each type encountered. Example:
+
+Po1 -> Pr1 -> Mat1 -> Me1 -> Mat2 -> Me2
+                   -> Me3
+           -> Mat3 -> Me4
+           
+This example will lead to the following aggregated nodes (noted ag(material;mesh) ):
+
+{ ag( Mat1 ; Me1 ) ; ag( Mat2 ; Me2 ) ; ag( Mat1 ; Me3 ) ; ag( Mat3 ; Me4 ) }
+
+In 'AGGREGATION', each node of each type is called 'Aggregate()'. AGGREGATION phase should not rely on internal parents, 
+but on the newly concept of subtree's parents. For example, MaterialNode should pass the aggregation phase to its 
+MaterialNode's parent. This will lead the following aggregations (only for materials): 
+
+|-> Mat2 -> Mat1 
+|-> Mat1
+|-> Mat1
+|-> Mat3
+
+This way nodes can update their values only when they want, in being selectable in 'SCENE-UPDATE' (nodes that does not 
+present as the least seen node are transparent) and customizing the aggregation passage in 'AGGREGATION' phase. 
+
+16.11.3. Implementation detail: launching SCENE-UPDATE function and creation of 'lsnodes' parameter.
+
+SCENE-UPDATE phase needs to create a new map to store nodes currently affecting an aggregated node. However, in order to 
+find the aggregated node in an aggregated group, we must compare the map hold by each aggregated node with the map 
+computed by SCENE-UPDATE. This operation might be too long for us. We want a compareason function as fast as a pointer
+address compareason. 
+If my desire is legitimate, it is almost impossible to do: if we allocate a new lsnodes map for an aggregated node, how do
+we retrieve it ? What we can do however, is we can store associated aggregated node with their lsnodes map directly in the
+mesh node (and in the aggregated group). The mesh node then has to look for the aggregated node in its own aggregated map
+(which is much smaller) and then find the resulting aggregated node in the group (and a shared pointer compareason occurs).
+
+When do we know the aggregated node must be destroyed ? The aggregated node is destroyed by the mesh node, or any node who
+created this aggregated object. AggregatedGroup only keeps track of weak pointers to those aggregated node. When there is
+a need to modify the list of aggregated nodes (mesh changed, parent changed), the list of aggregated nodes in the creator
+is destroyed and the creator will not be able to find an aggregated node matching the lsnodes map. 

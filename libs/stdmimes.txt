@@ -1,0 +1,3 @@
+mime = image/jpeg ;
+mime-exts = jpg jpeg ;
+mime-priority = 50 ;
