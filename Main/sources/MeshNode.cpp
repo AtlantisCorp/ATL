@@ -40,7 +40,8 @@ namespace atl
 	}
 	
 	////////////////////////////////////////////////////////////
-	MeshNode::MeshNode( const Weak < Mesh >& mesh ) : m_mesh( mesh )
+	MeshNode::MeshNode( const Weak < atl::Mesh >& mesh ) 
+	: DerivedNode < MeshNode >( Node::Subtype::Mesh ) , m_mesh( mesh )
 	{
 		
 	}
@@ -71,7 +72,7 @@ namespace atl
         // we must create a new aggregated node.
         
         MutexLocker lck( m_mutex );
-        lsnodes[GetSubtype()] = std::const_pointer_cast < Node >( shared_from_this() );
+        lsnodes[GetSubtype()] = std::const_pointer_cast < Node >( Node::shared_from_this() );
         
         auto agit = std::find_if( m_agnodes.begin() , m_agnodes.end() , [lsnodes,group](const Shared<AggregatedNode>& agnode) {
             assert( agnode );

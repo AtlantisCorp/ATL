@@ -46,7 +46,7 @@ namespace atl
     class SceneGraph : public Resource
     {
         ////////////////////////////////////////////////////////////
-        Shared < PositionNode > m_root ; ///< Root position node in this graph.
+        Shared < PositionNode > m_root ;  ///< Root position node in this graph.
         mutable Mutex           m_mutex ; ///< Mutex to lock when performing some action.
         
     public:

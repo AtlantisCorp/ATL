@@ -30,6 +30,7 @@
 #include <cstdarg>
 #include <type_traits>
 #include <exception>
+#include <algorithm>
 
 #include <glm/glm.hpp>
 #include <glm/ext.hpp>
@@ -88,8 +89,30 @@ namespace atl
     template < class Class >
     using SharedVector = std::vector < Shared < Class > > ;
 
-    template < class Class >
-    using Weak = std::weak_ptr < Class > ;
+    ////////////////////////////////////////////////////////////
+    template <typename T, typename U>
+	inline bool equals(const std::weak_ptr<T>& t, const std::weak_ptr<U>& u)
+	{
+		return !t.owner_before(u) && !u.owner_before(t);
+	}
+
+	////////////////////////////////////////////////////////////
+	template <typename T, typename U>
+	inline bool equals(const std::weak_ptr<T>& t, const std::shared_ptr<U>& u)
+	{
+		return !t.owner_before(u) && !u.owner_before(t);
+	}
+	
+	////////////////////////////////////////////////////////////
+	template <typename T, typename U>
+	inline bool operator ==(const std::weak_ptr<T>& t, const std::weak_ptr<U>& u )
+	{
+		return equals(t, u);
+	}
+	
+	////////////////////////////////////////////////////////////
+	template < typename Class >
+	using Weak = std::weak_ptr < Class > ;
 
     template < class Class >
     using WeakVector = std::vector < Weak < Class > > ;

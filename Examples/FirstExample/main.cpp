@@ -154,7 +154,44 @@ public:
             auto group = Root::Get().GetDefaultObjectGroup();
             assert( !group.expired() && "Invalid default group." );
             
-            // group.lock()->AddObject( graph );
+            scene->AssociateCameraWithObjectGroup( graph , group.lock() );
+            {
+            	m_groupforgraph[graph] = group ;
+            	group->AddObject( graph );
+            	assert( graph->GetGroup() == group );
+            }
+            
+            graph->Update( RenderTarget& target )
+            {
+            	auto root = Scene->GetSceneGraph()->GetRootNode();
+            	assert( root );
+            	
+            	auto aggroup = m_groupsbytarget[target];
+            	
+            	if ( !aggroup )
+				{
+					NodesBySubtype lsnodes ;
+					lsnodes[Node::Subtype::Camera] = m_cameranode ;
+            	
+					aggroup = new AggregatedGroup();
+					root->Update( lsnodes , *aggroup );
+					
+					m_groupsbytarget[target] = aggroup ;
+				}
+				
+				else if ( Scene->GetSceneGraph().lock()->IsDirty() )
+				{
+					root->Update( lsnodes , *aggroup );
+				}
+				
+				else if ( this->IsDirty() )
+				{
+					root->Update( lsnodes , *aggroup );
+				}
+            	
+            	aggroup->LaunchAggregation();
+            }
+
             ctxt.renderwindow.lock()->AddObjectGroup( group );
             
             ctxt.renderwindow.lock()->End();

@@ -78,7 +78,7 @@ namespace atl
                 auto oldparent = m_parent.lock();
                 assert( oldparent );
                 
-                oldparent->NotifiateChildErasure( shared_from_this() );
+                oldparent->NotifiateChildErasure( this->shared_from_this() );
             }
             
             m_parent = parent ;
@@ -105,7 +105,7 @@ namespace atl
                 auto parent = m_parent.lock();
                 assert( parent );
                 
-                auto thisptr = shared_from_this();
+                auto thisptr = this->shared_from_this();
                 assert( thisptr );
                 
                 parent->NotifiateChildErasure( thisptr );
@@ -126,7 +126,7 @@ namespace atl
             assert( treeptr );
             
             m_children.push_back( treeptr );
-            child->NotifiateParentChanged( shared_from_this() );
+            child->NotifiateParentChanged( this->shared_from_this() );
         }
         
         ////////////////////////////////////////////////////////////

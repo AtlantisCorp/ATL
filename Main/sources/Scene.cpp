@@ -18,7 +18,7 @@
 namespace atl
 {
     ////////////////////////////////////////////////////////////
-    Scene::Scene( const Shared < SceneGraph >& scenegraph ) : m_scenegraph( scenegraph )
+    Scene::Scene( const Shared < SceneGraph >& scenegraph ) : m_scenegraph( scenegraph ) , m_updthread() , m_stopupdthread( true )
     {
         if ( !m_scenegraph )
         {
@@ -30,7 +30,8 @@ namespace atl
     ////////////////////////////////////////////////////////////
     Scene::~Scene()
     {
-        
+    	m_stopupdthread.store( true );
+        if ( m_updthread.joinable() ) m_updthread.join();
     }
     
     ////////////////////////////////////////////////////////////
@@ -151,5 +152,49 @@ namespace atl
         
         scenegraph -> AddPositionNode( posnode );
         return rendernode ;
+    }
+    
+    ////////////////////////////////////////////////////////////
+    void Scene::StartAsync() 
+    {
+    	m_stopupdthread.store( true );
+    	if( m_updthread.joinable() ) m_updthread.join();
+    	
+    	SpinLocker lck( m_spinlock );
+    	
+    	m_stopupdthread.store( false );
+    	m_updthread = std::thread( []( Scene* scene ) {
+								
+			assert( scene );
+			
+			while( !scene->ShouldStopUpdateThread() )
+			{
+				scene->MakeOnSceneUpdate();
+			}
+								
+		} , this );
+    }
+    
+    ////////////////////////////////////////////////////////////
+    bool Scene::ShouldStopUpdateThread() const 
+    {
+    	return m_stopupdthread.load();
+    }
+    
+    ////////////////////////////////////////////////////////////
+    void Scene::MakeOnSceneUpdate()
+    {
+    	Spinlocker lck( m_spinlock );
+    	
+    	if ( m_scenegraph )
+		{
+			m_scenegraph->OnSceneUpdate();
+		}
+		
+		for ( auto camgraph : m_camgraphs )
+		{
+			assert( camgraph );
+			camgraph->OnSceneUpdate();
+		}
     }
 }

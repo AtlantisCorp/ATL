@@ -55,9 +55,11 @@ namespace atl
     class Scene
     {
         ////////////////////////////////////////////////////////////
-        Shared < SceneGraph >        m_scenegraph ; ///< SceneGraph attached to this scene.
-        SharedVector < CameraGraph > m_camgraphs ;  ///< CameraGraph(s) attached to this scene.
-        mutable Spinlock             m_spinlock ;   ///< Access to vector.
+        Shared < SceneGraph >        m_scenegraph ;    ///< SceneGraph attached to this scene.
+        SharedVector < CameraGraph > m_camgraphs ;     ///< CameraGraph(s) attached to this scene.
+        mutable Spinlock             m_spinlock ;      ///< Access to vector.
+        std::thread                  m_updthread ;     ///< Thread launched by 'StartAsync'.
+        Atomic < bool >              m_stopupdthread ; ///< Flag to stop thread.
         
     public:
         
@@ -118,6 +120,36 @@ namespace atl
                                                               const Weak < Material >& material ,
                                                               const Weak < Mesh >& mesh             = Weak < Mesh >() ,
                                                               const Weak < CameraGraph >& graph     = Weak < CameraGraph >() );
+                                                              
+		////////////////////////////////////////////////////////////
+		/// \brief Start a new thread (if not already launched) where
+		/// it calls 'OnSceneUpdate()' for every Graphs (SceneGraph and
+		/// CameraGraphs) present in the Scene.
+		///
+		/// Normally, SceneGraph will call 'OnSceneUpdate()' of its 
+		/// present root node. CameraGraph will call 'OnSceneUpdate()'
+		/// for its Camera node.
+		///
+		/// This update is usefull for every controllers. For example,
+		/// a controller can control the camera and be updated in this 
+		/// function. A path controller also can be updated in this function.
+		///
+		////////////////////////////////////////////////////////////
+		virtual void StartAsync();
+		
+		////////////////////////////////////////////////////////////
+		/// \brief Returns true if the asynchroneous update thread should
+		/// be stopped. 
+		///
+		////////////////////////////////////////////////////////////
+		virtual bool ShouldStopUpdateThread() const ;
+		
+		////////////////////////////////////////////////////////////
+		/// \brief Make a call to 'OnSceneUpdate()' on SceneGraph and 
+		/// auxiliaries CameraGraph.
+		///
+		////////////////////////////////////////////////////////////
+		virtual void MakeOnSceneUpdate();
     };
 }
 

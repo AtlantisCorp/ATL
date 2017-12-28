@@ -45,21 +45,21 @@ namespace atl
     class MaterialNode : public DerivedNode < MaterialNode >
     {
         ////////////////////////////////////////////////////////////
-        Weak < Material > m_material ; ///< Managed Material.
+        Weak < atl::Material > m_material ; ///< Managed Material.
         
     public:
         
         ////////////////////////////////////////////////////////////
-        MaterialNode( const Weak < Material >& material );
+        MaterialNode( const Weak < atl::Material >& material );
         
         ////////////////////////////////////////////////////////////
         virtual ~MaterialNode();
         
         ////////////////////////////////////////////////////////////
-        virtual void SetMaterial( const Weak < Material >& material );
+        virtual void SetMaterial( const Weak < atl::Material >& material );
         
         ////////////////////////////////////////////////////////////
-        virtual Weak < Material > GetMaterial() const ;
+        virtual Weak < atl::Material > GetMaterial() const ;
         
         ////////////////////////////////////////////////////////////
         /// \brief Aggregates owned material with given material.

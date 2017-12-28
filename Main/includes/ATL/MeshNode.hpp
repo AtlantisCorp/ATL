@@ -29,7 +29,7 @@ namespace atl
     class MeshNode : public DerivedNode < MeshNode >
     {
         ////////////////////////////////////////////////////////////
-        Detail::WeakDirtable < Mesh >           m_mesh ;    ///< Handled Mesh object.
+        Detail::WeakDirtable < atl::Mesh >      m_mesh ;    ///< Handled Mesh object.
         mutable SharedVector < AggregatedNode > m_agnodes ; ///< AggregatedNodes created by the mesh node.
         mutable Mutex                           m_mutex ;   ///< Access AggregatedNodes.
         
@@ -53,16 +53,16 @@ namespace atl
         /// \brief Construct a node with a Mesh.
         ///
         ////////////////////////////////////////////////////////////
-        MeshNode( const Weak < Mesh >& mesh );
+        MeshNode( const Weak < atl::Mesh >& mesh );
         
         ////////////////////////////////////////////////////////////
         virtual ~MeshNode();
         
         ////////////////////////////////////////////////////////////
-        virtual void SetMesh( const Weak < Mesh >& mesh );
+        virtual void SetMesh( const Weak < atl::Mesh >& mesh );
         
         ////////////////////////////////////////////////////////////
-        virtual Weak < Mesh > GetMesh() const ;
+        virtual Weak < atl::Mesh > GetMesh() const ;
         
         ////////////////////////////////////////////////////////////
         /// \brief Updates AggregatedNode for the given lsnodes map,

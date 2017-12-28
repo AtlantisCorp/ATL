@@ -37,12 +37,12 @@ namespace atl
     class ProgramNode : public DerivedNode < ProgramNode >
     {
         ////////////////////////////////////////////////////////////
-        Weak < Program > m_program ; ///< Program stored.
+        Weak < atl::Program > m_program ; ///< Program stored.
         
     public:
         
         ////////////////////////////////////////////////////////////
-        ProgramNode( const Weak < Program >& program );
+        ProgramNode( const Weak < atl::Program >& program );
         
         ////////////////////////////////////////////////////////////
         virtual ~ProgramNode();
@@ -51,10 +51,10 @@ namespace atl
         /// \brief Changes program used by this node.
         ///
         ////////////////////////////////////////////////////////////
-        virtual void SetProgram( const Weak < Program >& program );
+        virtual void SetProgram( const Weak < atl::Program >& program );
         
         ////////////////////////////////////////////////////////////
-        virtual Weak < Program > GetProgram() const ;
+        virtual Weak < atl::Program > GetProgram() const ;
         
         ////////////////////////////////////////////////////////////
         /// \brief Aggregates the program to the given rendercommand.

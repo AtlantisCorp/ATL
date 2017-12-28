@@ -15,8 +15,8 @@
 namespace atl
 {
     ////////////////////////////////////////////////////////////
-    MaterialNode::MaterialNode( const Weak < Material >& material )
-    : DerivedNode < MaterialNode >( NodeType::Material ) , m_material( material )
+    MaterialNode::MaterialNode( const Weak < atl::Material >& material )
+    : DerivedNode < MaterialNode >( Node::Subtype::Material ) , m_material( material )
     {
         
     }
@@ -28,7 +28,7 @@ namespace atl
     }
     
     ////////////////////////////////////////////////////////////
-    void MaterialNode::SetMaterial( const Weak < Material >& material )
+    void MaterialNode::SetMaterial( const Weak < atl::Material >& material )
     {
         m_material = material ;
     }

@@ -15,7 +15,7 @@
 namespace atl
 {
     ////////////////////////////////////////////////////////////
-    ProgramNode::ProgramNode( const Weak < Program >& program )
+    ProgramNode::ProgramNode( const Weak < atl::Program >& program )
     : DerivedNode < ProgramNode >( Node::Subtype::Program ) , m_program( program )
     {
         
@@ -34,7 +34,7 @@ namespace atl
     }
     
     ////////////////////////////////////////////////////////////
-    void ProgramNode::SetProgram( const Weak < Program >& program )
+    void ProgramNode::SetProgram( const Weak < atl::Program >& program )
     {
         m_program = program ;
     }
